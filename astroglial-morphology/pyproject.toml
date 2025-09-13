@@ -6,8 +6,16 @@ authors = [
     {name = "Your Name",email = "you@example.com"}
 ]
 readme = "README.md"
-requires-python = ">=3.7,<3.12"
+requires-python = ">=3.9,<3.12"
 dependencies = [
+    "scikit-image (>=0.24,<0.25)",
+    "pillow (>=11.3.0,<12.0.0)",
+    "ipykernel (>=6.30.1,<7.0.0)",
+    "numpy (>=2.0.2,<3.0.0)",
+    "matplotlib (>=3.9.4,<4.0.0)",
+    "cellpose (>=3.1.1.2,<4.0.0.0)",
+    "suite2p (>=0.14.0,<0.14.6)",
+    "astroglial-segmentation @ git+https://github.com/yaksilab/Astrolglial-cell-segmentation.git",
 ]
 
 [tool.poetry]
