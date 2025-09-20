@@ -7,15 +7,13 @@ def main() -> None:
 
     logger.info("Astroglial Morphology pipeline starting")
 
-    data_path = (
-        r"C:\Users\javid.rezai\YaksiLab\duygu\data\glast-gfp_OT_baseline_C=2_xyt"
-    )
+    data_path = r"C:\Users\javid.rezai\YaksiLab\duygu\data\2025.08.23-glast_gcamp6s_5dpf_30mMptz_40min_xyt"
 
     user_options = {
         "save_path0": "",
         "save_folder": [],
         "nplanes": 1,
-        "nchannels": 2,
+        "nchannels": 1,
         "functional_chan": 1,
         "tau": 3,
         "fs": 0.1942,
