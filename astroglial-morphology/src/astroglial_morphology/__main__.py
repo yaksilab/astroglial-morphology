@@ -68,7 +68,7 @@ def main() -> None:
     logger.info(f"Frames per channel per plane: {frames_per_channel_per_plane}")
 
     nimg_init = min(int(frames_per_channel_per_plane * 0.15), 300)
-    batch_size = min(int(frames_per_channel_per_plane * 0.2), 500)
+    batch_size = min(int(frames_per_channel_per_plane * 1), 500)
     logger.info(f"nimg_init: {nimg_init}, batch_size: {batch_size}")
 
     user_options = {
@@ -92,6 +92,7 @@ def main() -> None:
         "nonrigid": False,
         "roidetect": False,
         "spikedetect": False,
+        "reg_tif": True,
     }
 
     logger.debug("User options: %s", user_options)
