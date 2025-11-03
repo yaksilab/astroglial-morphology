@@ -91,55 +91,177 @@ class BinaryDataProcessor:
             logger.error(f"Error loading data: {e}")
             raise
 
-    def get_mean_image(self) -> np.ndarray:
+    def get_mean_image(self, batch_size: Optional[int] = None) -> np.ndarray:
         """
-        Get the mean image from ops metadata.
+        Get the mean image from ops metadata or calculate it from data.
+
+        Args:
+            batch_size: Number of frames to process at a time. If None, processes all frames at once.
+                       Use smaller batch sizes to avoid memory issues with large datasets.
+                       Only used if meanImg is not available in ops.
 
         Returns:
             Mean image as numpy array
         """
         if self.ops is None or "meanImg" not in self.ops:
             logger.warning("No meanImg found in ops, calculating from data")
-            if self.data is None:
+            if self.data is None or self.ops is None:
                 raise RuntimeError("No data loaded")
-            return np.mean(self.data.data, axis=0)
+            
+            if batch_size is None or batch_size >= self.ops["nframes"]:
+                return np.mean(self.data.data, axis=0)
+            
+            # Batch processing for mean
+            logger.info(f"Calculating mean image (batch size: {batch_size})")
+            nframes = self.ops["nframes"]
+            mean_image = None
+            
+            for start_idx in range(0, nframes, batch_size):
+                end_idx = min(start_idx + batch_size, nframes)
+                batch = self.data.data[start_idx:end_idx]
+                batch_sum = np.sum(batch, axis=0)
+                
+                if mean_image is None:
+                    mean_image = batch_sum.astype(np.float64)
+                else:
+                    mean_image += batch_sum
+                
+                logger.debug(f"Processed frames {start_idx}-{end_idx}/{nframes}")
+            
+            if mean_image is None:
+                raise RuntimeError("Failed to compute mean image")
+            
+            return mean_image / nframes
+        
         return self.ops["meanImg"]
 
-    def get_max_projection(self) -> np.ndarray:
+    def get_max_projection(self, batch_size: Optional[int] = None) -> np.ndarray:
         """
         Calculate maximum projection across all frames.
+
+        Args:
+            batch_size: Number of frames to process at a time. If None, processes all frames at once.
+                       Use smaller batch sizes to avoid memory issues with large datasets.
 
         Returns:
             Maximum projection image as numpy array
         """
-        if self.data is None:
+        if self.data is None or self.ops is None:
             raise RuntimeError("No data loaded")
-        logger.info("Calculating max projection")
-        return np.max(self.data.data, axis=0)
+        
+        if batch_size is None or batch_size >= self.ops["nframes"]:
+            logger.info("Calculating max projection (single batch)")
+            return np.max(self.data.data, axis=0)
+        
+        logger.info(f"Calculating max projection (batch size: {batch_size})")
+        nframes = self.ops["nframes"]
+        max_image = None
+        
+        for start_idx in range(0, nframes, batch_size):
+            end_idx = min(start_idx + batch_size, nframes)
+            batch = self.data.data[start_idx:end_idx]
+            batch_max = np.max(batch, axis=0)
+            
+            if max_image is None:
+                max_image = batch_max
+            else:
+                max_image = np.maximum(max_image, batch_max)
+            
+            logger.debug(f"Processed frames {start_idx}-{end_idx}/{nframes}")
+        
+        if max_image is None:
+            raise RuntimeError("Failed to compute max projection")
+        
+        return max_image
 
-    def get_std_image(self) -> np.ndarray:
+    def get_std_image(self, batch_size: Optional[int] = None) -> np.ndarray:
         """
         Calculate standard deviation image across all frames.
+
+        Args:
+            batch_size: Number of frames to process at a time. If None, processes all frames at once.
+                       Use smaller batch sizes to avoid memory issues with large datasets.
 
         Returns:
             Standard deviation image as numpy array
         """
-        if self.data is None:
+        if self.data is None or self.ops is None:
             raise RuntimeError("No data loaded")
-        logger.info("Calculating standard deviation image")
-        return np.std(self.data.data, axis=0)
+        
+        if batch_size is None or batch_size >= self.ops["nframes"]:
+            logger.info("Calculating standard deviation image (single batch)")
+            return np.std(self.data.data, axis=0)
+        
+        # For batch processing std, we use Welford's online algorithm
+        logger.info(f"Calculating standard deviation image (batch size: {batch_size})")
+        nframes = self.ops["nframes"]
+        
+        # Initialize accumulators
+        mean = None
+        M2 = None
+        n = 0
+        
+        for start_idx in range(0, nframes, batch_size):
+            end_idx = min(start_idx + batch_size, nframes)
+            batch = self.data.data[start_idx:end_idx]
+            
+            for frame in batch:
+                n += 1
+                if mean is None:
+                    mean = np.zeros_like(frame, dtype=np.float64)
+                    M2 = np.zeros_like(frame, dtype=np.float64)
+                
+                delta = frame - mean
+                mean += delta / n
+                delta2 = frame - mean
+                M2 += delta * delta2
+            
+            logger.debug(f"Processed frames {start_idx}-{end_idx}/{nframes}")
+        
+        if M2 is None or n == 0:
+            raise RuntimeError("Failed to compute standard deviation")
+        
+        std = np.sqrt(M2 / n)
+        return std
 
-    def get_sum_image(self) -> np.ndarray:
+    def get_sum_image(self, batch_size: Optional[int] = None) -> np.ndarray:
         """
         Calculate sum image across all frames.
+
+        Args:
+            batch_size: Number of frames to process at a time. If None, processes all frames at once.
+                       Use smaller batch sizes to avoid memory issues with large datasets.
 
         Returns:
             Sum image as numpy array
         """
-        if self.data is None:
+        if self.data is None or self.ops is None:
             raise RuntimeError("No data loaded")
-        logger.info("Calculating sum image")
-        return np.sum(self.data.data, axis=0)
+        
+        if batch_size is None or batch_size >= self.ops["nframes"]:
+            logger.info("Calculating sum image (single batch)")
+            return np.sum(self.data.data, axis=0)
+        
+        logger.info(f"Calculating sum image (batch size: {batch_size})")
+        nframes = self.ops["nframes"]
+        sum_image = None
+        
+        for start_idx in range(0, nframes, batch_size):
+            end_idx = min(start_idx + batch_size, nframes)
+            batch = self.data.data[start_idx:end_idx]
+            batch_sum = np.sum(batch, axis=0)
+            
+            if sum_image is None:
+                sum_image = batch_sum.astype(np.float64)
+            else:
+                sum_image += batch_sum
+            
+            logger.debug(f"Processed frames {start_idx}-{end_idx}/{nframes}")
+        
+        if sum_image is None:
+            raise RuntimeError("Failed to compute sum image")
+        
+        return sum_image
 
     def get_frame(self, frame_idx: int) -> np.ndarray:
         """
@@ -226,6 +348,7 @@ def create_projections(
     plane_idx: int = 0,
     output_dir: Optional[str] = None,
     save_images: bool = True,
+    batch_size: Optional[int] = None,
 ) -> Dict[str, np.ndarray]:
     """
     Create all standard projections and save them as images.
@@ -235,6 +358,8 @@ def create_projections(
         plane_idx: Index of the plane to load (default: 0)
         output_dir: Directory to save images (default: plane directory)
         save_images: Whether to save images to disk
+        batch_size: Number of frames to process at a time. If None, processes all frames at once.
+                   Use smaller batch sizes (e.g., 1000-5000) to avoid memory issues with large datasets.
 
     Returns:
         Dictionary containing all projection images
@@ -242,10 +367,10 @@ def create_projections(
     processor = load_binary_data(suite2p_folder_path, plane_idx)
 
     projections = {
-        "mean": processor.get_mean_image(),
-        "max_projection": processor.get_max_projection(),
-        "std": processor.get_std_image(),
-        "sum": processor.get_sum_image(),
+        "mean": processor.get_mean_image(batch_size=batch_size),
+        "max_projection": processor.get_max_projection(batch_size=batch_size),
+        "std": processor.get_std_image(batch_size=batch_size),
+        "sum": processor.get_sum_image(batch_size=batch_size),
     }
 
     if save_images:
