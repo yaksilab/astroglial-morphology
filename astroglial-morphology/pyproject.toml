@@ -15,7 +15,8 @@ dependencies = [
     "matplotlib (>=3.9.4,<4.0.0)",
     "cellpose (>=3.1.1.2,<4.0.0.0)",
     "suite2p (==0.14.5)",
-    "astroglial-segmentation @ git+https://github.com/yaksilab/Astrolglial-cell-segmentation.git",
+    "astroglial-analysis @ git+https://github.com/yaksilab/silver-dollop.git",
+
 ]
 
 [tool.poetry]
