@@ -363,6 +363,11 @@ def create_projections(
 
     Returns:
         Dictionary containing all projection images
+        - mean : Mean projection image
+        - max_projection : Max projection image
+        - std : Standard deviation projection image
+        - sum : Sum projection image
+
     """
     processor = load_binary_data(suite2p_folder_path, plane_idx)
 
