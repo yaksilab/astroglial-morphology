@@ -1,6 +1,7 @@
 from typing import Generator
 from cellpose.models import CellposeModel
 from suite2p.io import BinaryFile
+from cellpose.io import masks_flows_to_seg
 import numpy as np
 
 from .logging_config import get_logger
@@ -27,7 +28,8 @@ class Segmentation:
             "cellprob_threshold": 0.0,
             "diameter": None,
             "augment": True,
-            "resample": False,
+            "resample": True,
+            "min_size": 80,
         }
         self.default_eval_params["normalize"] = {
             "lowhigh": None,
@@ -44,6 +46,7 @@ class Segmentation:
     def segment_img(
         self,
         img: np.ndarray,
+        save_file_name: str = "image_masks",
         **kwargs,
     ) -> np.ndarray:
         """
@@ -84,10 +87,13 @@ class Segmentation:
 
         logger.info(f"Segmenting with Segmentation parameters: {model_eval_params}")
 
-        masks, _, _ = self.model.eval(
+        masks, flows, _ = self.model.eval(
             x=img,
             **model_eval_params,  # pyright: ignore[reportArgumentType]
         )
+        
+
+        masks_flows_to_seg(img, masks, flows, save_file_name)
         return masks
 
     def segment_binaryfile(
