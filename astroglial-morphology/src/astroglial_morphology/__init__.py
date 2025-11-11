@@ -6,6 +6,7 @@ from .binary_utils import (
     load_binary_data,
     create_projections,
 )
+from .classifier import classify_cells
 
 __all__ = [
     "do_registration",
@@ -16,4 +17,5 @@ __all__ = [
     "BinaryDataProcessor",
     "load_binary_data",
     "create_projections",
+    "classify_cells",
 ]
