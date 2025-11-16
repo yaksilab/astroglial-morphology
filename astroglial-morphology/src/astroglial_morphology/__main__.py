@@ -1,178 +1,106 @@
-from astroglial_morphology import do_registration, get_logger, setup_logging
-from astroglial_morphology.binary_utils import create_projections
-import numpy as np
-from pathlib import Path
-from utils.tiff_utils import extract_tiff_metadata
-from utils.lif_utils import extract_lif_metadata, lif_to_suite2p_binary
-from astroglial_morphology.segmentation import Segmentation
-from astroglial_morphology.classifier import classify_cells
-import os
+"""
+Main entry point for the astroglial morphology pipeline.
+
+Usage:
+    python -m astroglial_morphology <data_path> [--reg-tif] [--model PATH] [--gpu]
+"""
+
 import argparse
+import sys
+from pathlib import Path
+
+from astroglial_morphology import setup_logging, get_logger
+from astroglial_morphology.pipeline import Pipeline
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Astroglial Morphology pipeline")
+    """Run the astroglial morphology analysis pipeline."""
+    parser = argparse.ArgumentParser(
+        description="Astroglial morphology analysis pipeline",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  # Process TIFF or LIF file
+  python -m astroglial_morphology /path/to/data
+  
+  # Save registered TIFF (large files!)
+  python -m astroglial_morphology /path/to/data --reg-tif
+  
+  # Use custom model
+  python -m astroglial_morphology /path/to/data --model /path/to/model
+  
+  # Use GPU for segmentation
+  python -m astroglial_morphology /path/to/data --gpu
+        """,
+    )
     parser.add_argument(
-        "data_path", help="Path to the directory containing the TIFF files"
+        "data_path",
+        help="Path to directory containing input files (.tif or .lif)",
     )
     parser.add_argument(
         "--reg-tif",
         action="store_true",
-        help="Whether to save registered TIFF",
+        help="Save registered TIFF files (warning: creates large files)",
         default=False,
     )
+    parser.add_argument(
+        "--model",
+        help="Path to custom Cellpose model (optional)",
+        default=None,
+    )
+    parser.add_argument(
+        "--gpu",
+        action="store_true",
+        help="Use GPU for segmentation",
+        default=False,
+    )
+    parser.add_argument(
+        "--skip-registration",
+        action="store_true",
+        help="Skip registration step (assumes already completed)",
+        default=False,
+    )
+    parser.add_argument(
+        "--manual-correction",
+        action="store_true",
+        help="Load manually corrected masks instead of running segmentation",
+        default=False,
+    )
+
     args = parser.parse_args()
 
     setup_logging()
     logger = get_logger(__name__)
 
-    logger.info("Astroglial Morphology pipeline starting")
+    # Validate data path
+    data_path = Path(args.data_path)
+    if not data_path.exists():
+        logger.error(f"Data path does not exist: {data_path}")
+        sys.exit(1)
 
-    segmenter = Segmentation(
-        model_path=r"C:\Users\javid.rezai\YaksiLab\duygu\astroglial-morphology\astroglial-morphology\src\models\CP3_S4_1_0001_3000",
-        gpu=False,
-    )
+    if not data_path.is_dir():
+        logger.error(f"Data path is not a directory: {data_path}")
+        sys.exit(1)
 
-    data_path = args.data_path
-    data_path_obj = Path(data_path)
-
-    # Check for LIF files first, then TIFF files
-    lif_files = list(data_path_obj.glob("*.lif"))
-    tif_files = list(data_path_obj.glob("*.tif"))
-
-    is_lif_format = False
-    ops_from_lif = None
-
-    if lif_files:
-        # Process LIF file
-        is_lif_format = True
-        if len(lif_files) > 1:
-            logger.warning(
-                f"Multiple .lif files found in directory, using first one: {lif_files[0].name}"
-            )
-
-        lif_path = str(lif_files[0])
-        logger.info(f"Found LIF file: {lif_path}")
-
-        # Extract LIF metadata
-        metadata = extract_lif_metadata(lif_path, series_index=0)
-        logger.info(
-            f"LIF metadata: {metadata.nframes} frames, {metadata.nplanes} planes, "
-            f"{metadata.nchannels} channels, {metadata.finterval}s interval"
-        )
-        logger.info(
-            f"Frames per channel per plane: {metadata.frames_per_channel_per_plane}"
+    try:
+        pipeline = Pipeline(
+            data_path=str(data_path),
+            model_path=args.model,
+            use_gpu=args.gpu,
+            reg_tif=args.reg_tif,
         )
 
-        # Convert LIF to Suite2p binary format
-        logger.info("Converting LIF to Suite2p binary format...")
-        ops_from_lif = lif_to_suite2p_binary(
-            lif_path=lif_path,
-            output_dir=data_path,
-            series_index=0,
-            channel_index=0,
-            plane_index=0,
+        results = pipeline.run(
+            skip_registration=args.skip_registration,
+            manual_correction=args.manual_correction,
         )
-        logger.info("LIF conversion completed")
 
-    elif tif_files:
-        # Process TIFF file (existing logic)
-        if len(tif_files) > 1:
-            logger.warning(
-                f"Multiple .tif files found in directory, using first one: {tif_files[0].name}"
-            )
+        logger.info("Pipeline completed successfully")
+        logger.info(f"Results: {results['classification']}")
 
-        tiff_path = str(tif_files[0])
-        logger.info(f"Found TIFF file: {tiff_path}")
-
-        # Extract TIFF metadata using utility
-        metadata = extract_tiff_metadata(tiff_path)
-        logger.info(
-            f"TIFF metadata: {metadata.nframes} frames, {metadata.nplanes} planes, "
-            f"{metadata.nchannels} channels, {metadata.finterval}s interval"
-        )
-        logger.info(
-            f"Frames per channel per plane: {metadata.frames_per_channel_per_plane}"
-        )
-    else:
-        raise FileNotFoundError(f"No .lif or .tif file found in directory: {data_path}")
-
-    nimg_init = min(int(metadata.frames_per_channel_per_plane * 0.15), 300)
-    batch_size = min(int(metadata.frames_per_channel_per_plane * 1), 500)
-    logger.info(f"nimg_init: {nimg_init}, batch_size: {batch_size}")
-
-    user_options = {
-        "save_path0": "",
-        "save_folder": [],
-        "nplanes": metadata.nplanes,
-        "nchannels": metadata.nchannels,
-        "functional_chan": 1,
-        "tau": 3,
-        "fs": metadata.fs,
-        "multiplane_parallel": False,
-        "combined": True,
-        "do_registration": True,
-        "two_step_registration": False,
-        "keep_movie_raw": False,
-        "nimg_init": nimg_init,
-        "batch_size": batch_size,
-        "maxregshift": 0.11,
-        "align_by_chan": 1,
-        "subpixel": 10,
-        "nonrigid": False,
-        "roidetect": False,
-        "spikedetect": False,
-        "reg_tif": args.reg_tif,
-    }
-
-    # For LIF files, binary data already exists, so configure Suite2p accordingly
-    if is_lif_format:
-        user_options["input_format"] = "binary"
-        user_options["look_one_level_down"] = None
-        # Suite2p requires Lys and Lxs when using binary input
-        if ops_from_lif is not None:
-            user_options["Lys"] = ops_from_lif["Lys"]
-            user_options["Lxs"] = ops_from_lif["Lxs"]
-        logger.info("Using binary input format for LIF-converted data")
-
-    logger.debug("User options: %s", user_options)
-    do_registration(data_path, user_options)
-    logger.info("Registration completed")
-    logger.info("Creating projections")
-    projections = create_projections(data_path + "/suite2p", batch_size=batch_size)
-    logger.info("Projections created")
-    logger.info("Doing segmentation on mean projection")
-    save_path = os.path.join(data_path, "suite2p", "plane0", "mean_image")
-    diameter = (
-        metadata.pix_resolution * 31.35
-    )  # approximate average astrocyte diameter in microns
-    masks = segmenter.segment_img(
-        projections["mean"], save_path, diameter=diameter + 10
-    )
-    labels = np.unique(masks)
-    logger.info(f"Masks found with labels: {len(labels)}")
-    logger.info(
-        f"Please inspect the segmentation masks saved and make manual corrections if needed. Make manual correction by opening the segmented image file in cellpose"
-    )
-    manual_correc = (
-        True
-        if input("Did you make manual corrections to the masks y/n?") == "y"
-        else False
-    )
-
-    if manual_correc:
-        logger.info("loding manually corrected masks")
-        masks = np.load(
-            os.path.join(data_path, "suite2p", "plane0", "mean_image_seg.npy"),
-            allow_pickle=True,
-        ).item()["masks"]
-
-    logger.info("Doing classification of astrocyte morphology")
-    classification = classify_cells(masks=masks, neck_distance=int(diameter * 0.47))
-
-    logger.info(f"Classifications: {classification}")
-    logger.info("Classification completed")
-    logger.info("Astroglial Morphology pipeline completed")
+    except Exception as e:
+        logger.exception(f"Pipeline failed with error: {e}")
+        sys.exit(1)
 
 
 if __name__ == "__main__":
