@@ -1,7 +1,9 @@
 from astroglial_morphology import do_registration, get_logger, setup_logging
 from astroglial_morphology.binary_utils import create_projections
 import numpy as np
+from pathlib import Path
 from utils.tiff_utils import extract_tiff_metadata
+from utils.lif_utils import extract_lif_metadata, lif_to_suite2p_binary
 from astroglial_morphology.segmentation import Segmentation
 from astroglial_morphology.classifier import classify_cells
 import os
@@ -32,26 +34,68 @@ def main() -> None:
     )
 
     data_path = args.data_path
+    data_path_obj = Path(data_path)
 
-    tif_files = [f for f in os.listdir(data_path) if f.endswith(".tif")]
-    if not tif_files:
-        raise FileNotFoundError(f"No .tif file found in directory: {data_path}")
-    if len(tif_files) > 1:
-        logger.warning(
-            f"Multiple .tif files found in directory, using first one: {tif_files[0]}"
+    # Check for LIF files first, then TIFF files
+    lif_files = list(data_path_obj.glob("*.lif"))
+    tif_files = list(data_path_obj.glob("*.tif"))
+
+    is_lif_format = False
+    ops_from_lif = None
+
+    if lif_files:
+        # Process LIF file
+        is_lif_format = True
+        if len(lif_files) > 1:
+            logger.warning(
+                f"Multiple .lif files found in directory, using first one: {lif_files[0].name}"
+            )
+
+        lif_path = str(lif_files[0])
+        logger.info(f"Found LIF file: {lif_path}")
+
+        # Extract LIF metadata
+        metadata = extract_lif_metadata(lif_path, series_index=0)
+        logger.info(
+            f"LIF metadata: {metadata.nframes} frames, {metadata.nplanes} planes, "
+            f"{metadata.nchannels} channels, {metadata.finterval}s interval"
+        )
+        logger.info(
+            f"Frames per channel per plane: {metadata.frames_per_channel_per_plane}"
         )
 
-    tiff_path = os.path.join(data_path, tif_files[0])
+        # Convert LIF to Suite2p binary format
+        logger.info("Converting LIF to Suite2p binary format...")
+        ops_from_lif = lif_to_suite2p_binary(
+            lif_path=lif_path,
+            output_dir=data_path,
+            series_index=0,
+            channel_index=0,
+            plane_index=0,
+        )
+        logger.info("LIF conversion completed")
 
-    # Extract TIFF metadata using utility
-    metadata = extract_tiff_metadata(tiff_path)
-    logger.info(
-        f"TIFF metadata: {metadata.nframes} frames, {metadata.nplanes} planes, "
-        f"{metadata.nchannels} channels, {metadata.finterval}s interval"
-    )
-    logger.info(
-        f"Frames per channel per plane: {metadata.frames_per_channel_per_plane}"
-    )
+    elif tif_files:
+        # Process TIFF file (existing logic)
+        if len(tif_files) > 1:
+            logger.warning(
+                f"Multiple .tif files found in directory, using first one: {tif_files[0].name}"
+            )
+
+        tiff_path = str(tif_files[0])
+        logger.info(f"Found TIFF file: {tiff_path}")
+
+        # Extract TIFF metadata using utility
+        metadata = extract_tiff_metadata(tiff_path)
+        logger.info(
+            f"TIFF metadata: {metadata.nframes} frames, {metadata.nplanes} planes, "
+            f"{metadata.nchannels} channels, {metadata.finterval}s interval"
+        )
+        logger.info(
+            f"Frames per channel per plane: {metadata.frames_per_channel_per_plane}"
+        )
+    else:
+        raise FileNotFoundError(f"No .lif or .tif file found in directory: {data_path}")
 
     nimg_init = min(int(metadata.frames_per_channel_per_plane * 0.15), 300)
     batch_size = min(int(metadata.frames_per_channel_per_plane * 1), 500)
@@ -80,6 +124,16 @@ def main() -> None:
         "spikedetect": False,
         "reg_tif": args.reg_tif,
     }
+
+    # For LIF files, binary data already exists, so configure Suite2p accordingly
+    if is_lif_format:
+        user_options["input_format"] = "binary"
+        user_options["look_one_level_down"] = None
+        # Suite2p requires Lys and Lxs when using binary input
+        if ops_from_lif is not None:
+            user_options["Lys"] = ops_from_lif["Lys"]
+            user_options["Lxs"] = ops_from_lif["Lxs"]
+        logger.info("Using binary input format for LIF-converted data")
 
     logger.debug("User options: %s", user_options)
     do_registration(data_path, user_options)
@@ -116,7 +170,7 @@ def main() -> None:
     logger.info("Doing classification of astrocyte morphology")
     classification = classify_cells(masks=masks, neck_distance=int(diameter * 0.47))
 
-    logger.info("Classifications: ", classification)
+    logger.info(f"Classifications: {classification}")
     logger.info("Classification completed")
     logger.info("Astroglial Morphology pipeline completed")
 

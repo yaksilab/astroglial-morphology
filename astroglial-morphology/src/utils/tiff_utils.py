@@ -7,7 +7,7 @@ import tifffile
 logger = logging.getLogger(__name__)
 
 
-class TiffMetadata:
+class Metadata:
     """Container for TIFF metadata."""
 
     def __init__(
@@ -36,13 +36,13 @@ class TiffMetadata:
 
     def __repr__(self) -> str:
         return (
-            f"TiffMetadata(nframes={self.nframes}, nchannels={self.nchannels}, "
+            f"Metadata(nframes={self.nframes}, nchannels={self.nchannels}, "
             f"nplanes={self.nplanes}, finterval={self.finterval}, "
             f"pix_resolution={self.pix_resolution})"
         )
 
 
-def extract_tiff_metadata(tiff_path: str) -> TiffMetadata:
+def extract_tiff_metadata(tiff_path: str) -> Metadata:
     """
     Extract metadata from a TIFF file using tifffile's built-in metadata support.
 
@@ -53,7 +53,7 @@ def extract_tiff_metadata(tiff_path: str) -> TiffMetadata:
         tiff_path: Path to the TIFF file
 
     Returns:
-        TiffMetadata object containing extracted metadata
+        Metadata object containing extracted metadata
 
     Raises:
         FileNotFoundError: If TIFF file doesn't exist
@@ -228,9 +228,7 @@ def extract_tiff_metadata(tiff_path: str) -> TiffMetadata:
                     f"Extracted from Info: channels={nchannels}, planes={nplanes}, "
                     f"finterval={finterval}, pix_resolution={pix_resolution:.3f}"
                 )
-                return TiffMetadata(
-                    nframes, nchannels, nplanes, finterval, pix_resolution
-                )
+                return Metadata(nframes, nchannels, nplanes, finterval, pix_resolution)
             else:
                 raise ValueError(
                     "Could not extract SizeT from Info field. "

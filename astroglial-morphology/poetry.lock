@@ -3286,6 +3286,23 @@ tqdm = "*"
 gui = ["pyqt6", "pyqt6.sip", "pyqtgraph (>=0.11.0rc0)", "qtpy", "superqt"]
 
 [[package]]
+name = "readlif"
+version = "0.6.6"
+description = "Fast Leica Image Format (LIF) file reader"
+optional = false
+python-versions = "<4.0,>=3.9"
+groups = ["main"]
+files = [
+    {file = "readlif-0.6.6-py3-none-any.whl", hash = "sha256:f7dc4d515a4cd992ecc064fcd88552f48c8a33ac811c7d2c33cb155b0c889d84"},
+    {file = "readlif-0.6.6.tar.gz", hash = "sha256:54620db7d9532afbff7fa2ba5f05d96b5b79d351213b91edd88d15145c7a6b4b"},
+]
+
+[package.dependencies]
+beautifulsoup4 = ">=4.12.3"
+numpy = ">=2.0.0"
+pillow = ">=7.2.0"
+
+[[package]]
 name = "referencing"
 version = "0.36.2"
 description = "JSON Referencing + Python"
@@ -4270,4 +4287,4 @@ type = ["pytest-mypy"]
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.9,<3.11"
-content-hash = "e9d7d6ee8ab981e9f6fdba0a23ff590368cf4ed01872a778063aedb6a6a30fa8"
+content-hash = "78e18591fae54a74f64fdeff89ca58c3cd164dc64997a5eac192d2886a75b6b3"
