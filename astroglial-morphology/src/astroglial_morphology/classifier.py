@@ -133,8 +133,9 @@ def classify_cells(masks, neck_distance=50):
     Returns:
         dict with classification details
     """
-    classifications = {}
+    classifications_pp = {}
     props = regionprops(masks.astype(np.int32))
+    classifications = []
 
     for prop in props:
         cell_label = prop.label
@@ -172,8 +173,10 @@ def classify_cells(masks, neck_distance=50):
             other_neck_thickness = neck_thickness_2
             if soma_end[0] < other_end[0]:
                 cell_type = "Lower"
+                classifications.append((2, cell_label))
             else:
                 cell_type = "Upper"
+                classifications.append((1, cell_label))
 
         else:
             soma_end = endpoints[1]
@@ -184,9 +187,12 @@ def classify_cells(masks, neck_distance=50):
             other_neck_thickness = neck_thickness_1
             if soma_end[0] < other_end[0]:
                 cell_type = "Lower"
+                classifications.append((2, cell_label))
             else:
                 cell_type = "Upper"
-        classifications[cell_label] = {
+                classifications.append((1, cell_label))
+
+        classifications_pp[cell_label] = {
             "type": cell_type,
             "soma_end": soma_end,
             "process_end": other_end,
@@ -198,7 +204,7 @@ def classify_cells(masks, neck_distance=50):
             "neck_distance": neck_distance,
         }
 
-    return classifications
+    return classifications, classifications_pp
 
 
 def visualize_classified_cells_with_necks(masks, classifications):
