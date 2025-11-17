@@ -3,8 +3,8 @@
 import logging
 from typing import Any
 from .file_detection import InputFileInfo, InputFormat
-from utils.tiff_utils import extract_tiff_metadata
-from utils.lif_utils import extract_lif_metadata
+from ..utils.tiff_utils import extract_tiff_metadata
+from ..utils.lif_utils import extract_lif_metadata
 
 logger = logging.getLogger(__name__)
 

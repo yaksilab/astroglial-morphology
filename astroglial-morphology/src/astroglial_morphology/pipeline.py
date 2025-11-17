@@ -13,7 +13,7 @@ from .binary_utils import create_projections
 from .segmentation import Segmentation
 from .classifier import classify_cells
 from .correspondence import export_correspondence_products
-from utils.lif_utils import lif_to_suite2p_binary
+from .utils.lif_utils import lif_to_suite2p_binary
 
 logger = logging.getLogger(__name__)
 
