@@ -12,6 +12,7 @@ from .registration import do_registration
 from .binary_utils import create_projections
 from .segmentation import Segmentation
 from .classifier import classify_cells
+from .correspondence import export_correspondence_products
 from utils.lif_utils import lif_to_suite2p_binary
 
 logger = logging.getLogger(__name__)
@@ -204,10 +205,65 @@ class Pipeline:
         logger.info(f"Classification completed: {self.classification}")
         return self.classification
 
+    def export_correspondence_data(
+        self,
+        segment_length: int = 10,
+        delta_x: float = 20.0,
+        mask_filename: str = "subsegmented_masks_seg.npy",
+    ) -> Optional[Dict[str, Any]]:
+        """Create correspondence matrix, subsegment masks, and extract traces."""
+
+        if self.masks is None or self.classification is None:
+            raise RuntimeError(
+                "Must complete segmentation and classification before exporting correspondence"
+            )
+
+        classification_rows = (
+            self.classification[0]
+            if isinstance(self.classification, tuple)
+            else self.classification
+        )
+        if not classification_rows:
+            logger.warning("No cells were segmented; skipping correspondence export")
+            return None
+
+        template_seg_path = (
+            Path(self.data_path) / "suite2p" / "plane0" / "mean_image_seg.npy"
+        )
+        if not template_seg_path.exists():
+            raise FileNotFoundError(
+                f"Cannot locate segmentation file for template metadata: {template_seg_path}"
+            )
+
+        logger.info(
+            "Exporting correspondence data (segment_length=%d, delta_x=%.2f)",
+            segment_length,
+            delta_x,
+        )
+
+        outputs = export_correspondence_products(
+            data_path=Path(self.data_path) / "suite2p" / "plane0",
+            template_seg_path=template_seg_path,
+            masks=self.masks,
+            classifications=classification_rows,
+            segment_length=segment_length,
+            delta_x=delta_x,
+            mask_filename=mask_filename,
+        )
+        if outputs is None:
+            logger.info("Correspondence export skipped")
+            return None
+
+        logger.info("Correspondence export completed")
+        return outputs
+
     def run(
         self,
         skip_registration: bool = False,
         manual_correction: bool = False,
+        export_correspondence: bool = False,
+        correspondence_segment_length: int = 100,
+        correspondence_delta_x: float = 20.0,
     ) -> Dict[str, Any]:
         """
         Run the complete pipeline.
@@ -215,6 +271,9 @@ class Pipeline:
         Args:
             skip_registration: If True, skip registration step (assumes already done)
             manual_correction: If True, load manually corrected masks
+            export_correspondence: Build correspondence/trace outputs when True
+            correspondence_segment_length: Segment length in pixels for subsegmentation
+            correspondence_delta_x: X-axis grouping distance for correspondence alignment
 
         Returns:
             Dictionary with pipeline results
@@ -247,6 +306,13 @@ class Pipeline:
         # Step 8: Classify cells
         self.classify_cells()
 
+        correspondence_outputs = None
+        if export_correspondence:
+            correspondence_outputs = self.export_correspondence_data(
+                segment_length=correspondence_segment_length,
+                delta_x=correspondence_delta_x,
+            )
+
         logger.info("Pipeline completed successfully")
 
         return {
@@ -255,4 +321,5 @@ class Pipeline:
             "projections": self.projections,
             "masks": self.masks,
             "classification": self.classification,
+            "correspondence": correspondence_outputs,
         }

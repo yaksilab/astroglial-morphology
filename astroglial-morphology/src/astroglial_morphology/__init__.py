@@ -7,6 +7,7 @@ from .binary_utils import (
     create_projections,
 )
 from .classifier import classify_cells
+from .correspondence import export_correspondence_products
 
 __all__ = [
     "do_registration",
@@ -18,4 +19,5 @@ __all__ = [
     "load_binary_data",
     "create_projections",
     "classify_cells",
+    "export_correspondence_products",
 ]

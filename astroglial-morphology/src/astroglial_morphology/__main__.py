@@ -66,6 +66,24 @@ Examples:
         help="Load manually corrected masks instead of running segmentation",
         default=False,
     )
+    parser.add_argument(
+        "--export-correspondence",
+        action="store_true",
+        help="Generate correspondence matrix, subsegmented masks, and trace exports",
+        default=True,
+    )
+    parser.add_argument(
+        "--segment-length",
+        type=int,
+        default=100,
+        help="Segment length (in pixels) used when exporting correspondence data",
+    )
+    parser.add_argument(
+        "--correspondence-delta-x",
+        type=float,
+        default=20.0,
+        help="Maximum x-distance for grouping cells while aligning correspondence",
+    )
 
     args = parser.parse_args()
 
@@ -93,10 +111,25 @@ Examples:
         results = pipeline.run(
             skip_registration=args.skip_registration,
             manual_correction=args.manual_correction,
+            export_correspondence=args.export_correspondence,
+            correspondence_segment_length=args.segment_length,
+            correspondence_delta_x=args.correspondence_delta_x,
         )
 
         logger.info("Pipeline completed successfully")
         logger.info(f"Results: {results['classification']}")
+        if args.export_correspondence and results.get("correspondence"):
+            corr_outputs = results["correspondence"]
+            logger.info(
+                "Correspondence matrix: %s (npy), %s (mat)",
+                corr_outputs["correspondence_matrix_path"],
+                corr_outputs["correspondence_matrix_mat_path"],
+            )
+            logger.info(
+                "Trace matrix: %s (npy), %s (mat)",
+                corr_outputs["trace_matrix_path"],
+                corr_outputs["trace_matrix_mat_path"],
+            )
 
     except Exception as e:
         logger.exception(f"Pipeline failed with error: {e}")
