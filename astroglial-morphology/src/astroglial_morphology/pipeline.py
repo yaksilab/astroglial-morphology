@@ -12,7 +12,10 @@ from .registration import do_registration
 from .binary_utils import create_projections
 from .segmentation import Segmentation
 from .classifier import classify_cells
-from .correspondence import export_correspondence_products
+from .correspondence import (
+    export_correspondence_products,
+    SUBSEGMENTATION_MODE_EQUAL_LENGTH,
+)
 from .utils.lif_utils import lif_to_suite2p_binary
 
 logger = logging.getLogger(__name__)
@@ -64,6 +67,7 @@ class Pipeline:
         self.projections = None
         self.masks = None
         self.classification = None
+        self.neck_distance: Optional[int] = None
 
     def detect_input(self) -> None:
         """Detect input file in the data directory."""
@@ -197,6 +201,7 @@ class Pipeline:
 
         diameter = self.config.calculate_diameter(self.metadata.pix_resolution)
         neck_distance = self.config.calculate_neck_distance(diameter)
+        self.neck_distance = neck_distance
 
         self.classification = classify_cells(
             masks=self.masks, neck_distance=neck_distance
@@ -209,6 +214,7 @@ class Pipeline:
         self,
         segment_length: int = 10,
         delta_x: float = 20.0,
+        subsegmentation_mode: str = SUBSEGMENTATION_MODE_EQUAL_LENGTH,
         mask_filename: str = "subsegmented_masks_seg.npy",
     ) -> Optional[Dict[str, Any]]:
         """Create correspondence matrix, subsegment masks, and extract traces."""
@@ -236,10 +242,16 @@ class Pipeline:
             )
 
         logger.info(
-            "Exporting correspondence data (segment_length=%d, delta_x=%.2f)",
+            "Exporting correspondence data (segment_length=%d, delta_x=%.2f, mode=%s)",
             segment_length,
             delta_x,
+            subsegmentation_mode,
         )
+
+        neck_distance = self.neck_distance
+        if neck_distance is None and self.metadata is not None:
+            diameter = self.config.calculate_diameter(self.metadata.pix_resolution)
+            neck_distance = self.config.calculate_neck_distance(diameter)
 
         outputs = export_correspondence_products(
             data_path=Path(self.data_path) / "suite2p" / "plane0",
@@ -248,6 +260,8 @@ class Pipeline:
             classifications=classification_rows,
             segment_length=segment_length,
             delta_x=delta_x,
+            subsegmentation_mode=subsegmentation_mode,
+            neck_distance=neck_distance,
             mask_filename=mask_filename,
         )
         if outputs is None:
@@ -264,6 +278,7 @@ class Pipeline:
         export_correspondence: bool = False,
         correspondence_segment_length: int = 100,
         correspondence_delta_x: float = 20.0,
+        correspondence_subsegmentation_mode: str = SUBSEGMENTATION_MODE_EQUAL_LENGTH,
     ) -> Dict[str, Any]:
         """
         Run the complete pipeline.
@@ -274,6 +289,7 @@ class Pipeline:
             export_correspondence: Build correspondence/trace outputs when True
             correspondence_segment_length: Segment length in pixels for subsegmentation
             correspondence_delta_x: X-axis grouping distance for correspondence alignment
+            correspondence_subsegmentation_mode: Strategy for subsegmenting cells
 
         Returns:
             Dictionary with pipeline results
@@ -311,6 +327,7 @@ class Pipeline:
             correspondence_outputs = self.export_correspondence_data(
                 segment_length=correspondence_segment_length,
                 delta_x=correspondence_delta_x,
+                subsegmentation_mode=correspondence_subsegmentation_mode,
             )
 
         logger.info("Pipeline completed successfully")

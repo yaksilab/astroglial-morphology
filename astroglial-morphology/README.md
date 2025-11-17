@@ -32,3 +32,15 @@ The package will do motion correction using suite2p and outputs the following pr
 - max projection image
 - std deviation image
 - sum image
+
+### Exporting Correspondence & Trace Data
+
+To reproduce the correspondence matrix and trace exports from the original `astroglialAnalysis` workflow, run the CLI with `--export-correspondence`. Optional knobs let you choose the sub-segmentation length and the x-axis grouping distance used during alignment:
+
+```shell
+python -m astroglial_morphology <data-dir> --export-correspondence --segment-length 10 --correspondence-delta-x 20
+```
+
+This command creates `subsegmented_masks_seg.npy`, `correspondence_matrix.(npy|mat)`, and `trace_matrix.(npy|mat)` inside your data directory while also extracting Suite2p traces for the new mask set.
+
+Use `--subsegmentation-mode compartments` to split each aligned process into four biologically-inspired regions (soma, middle-near-soma, middle-near-distal, distal). In this mode every subsegment receives a class label 1–4 in addition to the original upper/lower class, while the default `equal_length` mode keeps the previous fixed-pixel segmentation that is controlled by `--segment-length`.

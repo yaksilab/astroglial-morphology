@@ -10,6 +10,10 @@ import sys
 from pathlib import Path
 
 from astroglial_morphology import setup_logging, get_logger
+from astroglial_morphology.correspondence import (
+    VALID_SUBSEGMENTATION_MODES,
+    SUBSEGMENTATION_MODE_EQUAL_LENGTH,
+)
 from astroglial_morphology.pipeline import Pipeline
 
 
@@ -75,7 +79,7 @@ Examples:
     parser.add_argument(
         "--segment-length",
         type=int,
-        default=100,
+        default=30,
         help="Segment length (in pixels) used when exporting correspondence data",
     )
     parser.add_argument(
@@ -83,6 +87,12 @@ Examples:
         type=float,
         default=20.0,
         help="Maximum x-distance for grouping cells while aligning correspondence",
+    )
+    parser.add_argument(
+        "--subsegmentation-mode",
+        choices=sorted(VALID_SUBSEGMENTATION_MODES),
+        default=SUBSEGMENTATION_MODE_EQUAL_LENGTH,
+        help="How to subsegment each cell: equal_length (fixed pixels) or compartments (soma/middle/distal)",
     )
 
     args = parser.parse_args()
@@ -114,6 +124,7 @@ Examples:
             export_correspondence=args.export_correspondence,
             correspondence_segment_length=args.segment_length,
             correspondence_delta_x=args.correspondence_delta_x,
+            correspondence_subsegmentation_mode=args.subsegmentation_mode,
         )
 
         logger.info("Pipeline completed successfully")
