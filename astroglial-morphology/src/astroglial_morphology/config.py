@@ -9,7 +9,7 @@ class PipelineConfig:
     """Configuration for the astroglial morphology analysis pipeline."""
 
     # Model paths
-    DEFAULT_MODEL_DIR = Path(__file__).parent.parent / "models"
+    DEFAULT_MODEL_DIR = Path(__file__).parent / "models"
     DEFAULT_MODEL_NAME = "CP3_S4_1_0001_3000"
 
     @classmethod
