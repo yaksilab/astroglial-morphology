@@ -172,11 +172,11 @@ def classify_cells(masks, neck_distance=50):
             soma_neck_thickness = neck_thickness_1
             other_neck_thickness = neck_thickness_2
             if soma_end[0] < other_end[0]:
+                cell_type = "upper"
+                classifications.append((1, cell_label))
+            else:
                 cell_type = "Lower"
                 classifications.append((2, cell_label))
-            else:
-                cell_type = "Upper"
-                classifications.append((1, cell_label))
 
         else:
             soma_end = endpoints[1]
@@ -186,11 +186,11 @@ def classify_cells(masks, neck_distance=50):
             soma_neck_thickness = neck_thickness_2
             other_neck_thickness = neck_thickness_1
             if soma_end[0] < other_end[0]:
-                cell_type = "Lower"
-                classifications.append((2, cell_label))
-            else:
-                cell_type = "Upper"
+                cell_type = "upper"
                 classifications.append((1, cell_label))
+            else:
+                cell_type = "lower"
+                classifications.append((2, cell_label))
 
         classifications_pp[cell_label] = {
             "type": cell_type,

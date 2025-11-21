@@ -1,10 +1,11 @@
-from typing import Generator
+from typing import Generator, Optional
 from cellpose.models import CellposeModel
 from suite2p.io import BinaryFile
 from cellpose.io import masks_flows_to_seg
 import numpy as np
 
 from .logging_config import get_logger
+from .config import PipelineConfig
 
 logger = get_logger(__name__)
 
@@ -16,9 +17,11 @@ class Segmentation:
 
     def __init__(
         self,
-        model_path: str = r"C:\Users\javid.rezai\YaksiLab\duygu\astroglial-morphology\astroglial-morphology\src\models\CP3_S4_0-1_0-0001_10000",
+        model_path: Optional[str] = None,
         gpu: bool = False,
     ) -> None:
+        if model_path is None:
+            model_path = PipelineConfig.get_model_path()
         self.model = CellposeModel(
             gpu=gpu,
             pretrained_model=model_path,  # pyright: ignore[reportArgumentType]
@@ -91,7 +94,6 @@ class Segmentation:
             x=img,
             **model_eval_params,  # pyright: ignore[reportArgumentType]
         )
-        
 
         masks_flows_to_seg(img, masks, flows, save_file_name)
         return masks
