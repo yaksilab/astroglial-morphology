@@ -149,8 +149,13 @@ class Pipeline:
         logger.info("Projections created")
         return self.projections
 
-    def segment_cells(self) -> np.ndarray:
-        """Segment cells using Cellpose."""
+    def segment_cells(self, interactive_correction: bool = False) -> np.ndarray:
+        """Segment cells using Cellpose.
+
+        Args:
+            interactive_correction: If True, prompts user to manually correct masks
+                                   in Cellpose before continuing
+        """
         if self.projections is None:
             raise RuntimeError("Must create projections before segmentation")
 
@@ -169,7 +174,50 @@ class Pipeline:
         labels = np.unique(self.masks)
         logger.info(f"Found {len(labels)} cell masks")
 
+        if interactive_correction:
+            self._prompt_for_manual_correction(save_path)
+
         return self.masks
+
+    def _prompt_for_manual_correction(self, seg_path: str) -> None:
+        """
+        Prompt user to manually correct masks in Cellpose.
+
+        Args:
+            seg_path: Path to the segmentation file (without _seg.npy extension)
+        """
+        seg_file = f"{seg_path}_seg.npy"
+
+        print("\n" + "=" * 70)
+        print("MANUAL CORRECTION REQUIRED")
+        print("=" * 70)
+        print(f"\nAutomatic segmentation completed.")
+        print(f"Segmentation file saved at:\n  {seg_file}\n")
+        print("Please follow these steps:")
+        print("  1. Open the Cellpose GUI")
+        print("  2. Load the segmentation file")
+        print("  3. Inspect and correct the masks as needed")
+        print("  4. Save the corrected masks (overwrite the same file)")
+        print("  5. Return here and confirm\n")
+        print("=" * 70)
+
+        while True:
+            response = (
+                input("\nHave you completed manual correction? (yes/no): ")
+                .strip()
+                .lower()
+            )
+            if response in ["yes", "y"]:
+                logger.info("User confirmed manual correction completed")
+                self.load_manual_corrections()
+                break
+            elif response in ["no", "n"]:
+                logger.info(
+                    "User skipped manual correction, using automatic segmentation"
+                )
+                break
+            else:
+                print("Please answer 'yes' or 'no'")
 
     def load_manual_corrections(self) -> np.ndarray:
         """
@@ -312,14 +360,10 @@ class Pipeline:
         # Step 5: Create projections
         self.create_projections()
 
-        # Step 6: Segment cells
-        self.segment_cells()
+        # Step 6: Segment cells (with optional interactive correction)
+        self.segment_cells(interactive_correction=manual_correction)
 
-        # Step 7: Load manual corrections if requested
-        if manual_correction:
-            self.load_manual_corrections()
-
-        # Step 8: Classify cells
+        # Step 7: Classify cells
         self.classify_cells()
 
         correspondence_outputs = None
