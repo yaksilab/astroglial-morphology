@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sys
 from contextlib import contextmanager
+from pathlib import Path
 from typing import Mapping, MutableMapping, Optional
 
 from suite2p.default_ops import default_ops
@@ -77,3 +78,22 @@ def do_registration(
     with capture_suite2p_output():
         run_s2p(options, db)
     logger.info("Registration completed successfully")
+
+    # Create registration completion flag
+    flag_path = Path(data_path) / "suite2p" / ".registration_complete"
+    flag_path.touch()
+    logger.debug(f"Created registration flag: {flag_path}")
+
+
+def check_registration_complete(data_path: str) -> bool:
+    """
+    Check if registration has been completed for the given data path.
+
+    Args:
+        data_path: Path to the data directory
+
+    Returns:
+        True if registration is complete, False otherwise
+    """
+    flag_path = Path(data_path) / "suite2p" / ".registration_complete"
+    return flag_path.exists()

@@ -8,7 +8,10 @@ import numpy as np
 
 from .config import PipelineConfig
 from .io import detect_input_file, load_metadata, InputFormat
-from .registration import do_registration
+from .registration import (
+    do_registration,
+    check_registration_complete,
+)
 from .binary_utils import create_projections
 from .segmentation import Segmentation
 from .classifier import classify_cells
@@ -88,22 +91,47 @@ class Pipeline:
         """
         Prepare data for Suite2p processing.
 
-        For LIF files, this converts to binary format.
+        For LIF files, this converts to binary format if not already converted.
         For TIFF files, no preparation is needed.
         """
         if self.file_info is None or self.metadata is None:
             raise RuntimeError("Must call detect_input() and load_metadata() first")
 
         if self.file_info.format == InputFormat.LIF:
-            logger.info("Converting LIF to Suite2p binary format...")
-            ops_from_lif = lif_to_suite2p_binary(
-                lif_path=self.file_info.path_str,
-                output_dir=self.data_path,
-                series_index=self.config.LIF_SERIES_INDEX,
-                channel_index=self.config.LIF_CHANNEL_INDEX,
-                plane_index=self.config.LIF_PLANE_INDEX,
-            )
-            logger.info("LIF conversion completed")
+            # Check if LIF has already been converted to binary
+            suite2p_path = Path(self.data_path) / "suite2p" / "plane0"
+            data_bin_path = suite2p_path / "data.bin"
+            ops_npy_path = suite2p_path / "ops.npy"
+
+            if data_bin_path.exists() and ops_npy_path.exists():
+                logger.info("LIF file already converted to Suite2p binary format")
+                # Load existing ops to get Lys and Lxs
+                try:
+                    existing_ops = np.load(ops_npy_path, allow_pickle=True).item()
+                    ops_from_lif = {
+                        "Lys": existing_ops.get("Lys", [existing_ops["Ly"]]),
+                        "Lxs": existing_ops.get("Lxs", [existing_ops["Lx"]]),
+                    }
+                except Exception as e:
+                    logger.warning(f"Failed to load existing ops.npy: {e}")
+                    logger.info("Re-converting LIF file...")
+                    ops_from_lif = lif_to_suite2p_binary(
+                        lif_path=self.file_info.path_str,
+                        output_dir=self.data_path,
+                        series_index=self.config.LIF_SERIES_INDEX,
+                        channel_index=self.config.LIF_CHANNEL_INDEX,
+                        plane_index=self.config.LIF_PLANE_INDEX,
+                    )
+            else:
+                logger.info("Converting LIF to Suite2p binary format...")
+                ops_from_lif = lif_to_suite2p_binary(
+                    lif_path=self.file_info.path_str,
+                    output_dir=self.data_path,
+                    series_index=self.config.LIF_SERIES_INDEX,
+                    channel_index=self.config.LIF_CHANNEL_INDEX,
+                    plane_index=self.config.LIF_PLANE_INDEX,
+                )
+                logger.info("LIF conversion completed")
 
             # Build Suite2p options for binary input
             self.suite2p_options = self.config.build_suite2p_options(
@@ -122,16 +150,29 @@ class Pipeline:
                 reg_tif=self.reg_tif,
             )
 
-    def run_registration(self) -> None:
-        """Run Suite2p motion correction."""
+    def run_registration(self, force: bool = False) -> bool:
+        """Run Suite2p motion correction.
+
+        Args:
+            force: If True, run registration even if already complete
+
+        Returns:
+            True if registration was performed, False if skipped
+        """
         if self.suite2p_options is None:
             raise RuntimeError("Must call prepare_data() before run_registration()")
+
+        # Check if registration is already complete
+        if not force and check_registration_complete(self.data_path):
+            logger.info("Registration already complete - skipping")
+            return False
 
         logger.info("Starting motion correction...")
         logger.debug(f"Suite2p options: {self.suite2p_options}")
 
         do_registration(self.data_path, self.suite2p_options)
         logger.info("Registration completed")
+        return True
 
     def create_projections(self) -> Dict[str, np.ndarray]:
         """Create projection images from registered data."""
@@ -322,6 +363,7 @@ class Pipeline:
     def run(
         self,
         skip_registration: bool = False,
+        force_registration: bool = False,
         manual_correction: bool = False,
         export_correspondence: bool = False,
         correspondence_segment_length: int = 100,
@@ -332,7 +374,8 @@ class Pipeline:
         Run the complete pipeline.
 
         Args:
-            skip_registration: If True, skip registration step (assumes already done)
+            skip_registration: If True, unconditionally skip registration (deprecated, auto-detected now)
+            force_registration: If True, run registration even if already complete
             manual_correction: If True, load manually corrected masks
             export_correspondence: Build correspondence/trace outputs when True
             correspondence_segment_length: Segment length in pixels for subsegmentation
@@ -353,9 +396,11 @@ class Pipeline:
         # Step 3: Prepare data (always needed for suite2p_options)
         self.prepare_data()
 
-        # Step 4: Run registration (unless skipped)
-        if not skip_registration:
-            self.run_registration()
+        # Step 4: Run registration (auto-detected or forced)
+        if skip_registration:
+            logger.info("Registration explicitly skipped by user")
+        else:
+            self.run_registration(force=force_registration)
 
         # Step 5: Create projections
         self.create_projections()

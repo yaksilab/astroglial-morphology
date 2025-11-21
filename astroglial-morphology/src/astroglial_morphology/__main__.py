@@ -24,8 +24,11 @@ def main() -> None:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  # Process TIFF or LIF file
+  # Process TIFF or LIF file (auto-detects if registration already done)
   python -m astroglial_morphology /path/to/data
+  
+  # Force re-registration even if already complete
+  python -m astroglial_morphology /path/to/data --force-registration
   
   # Save registered TIFF (large files!)
   python -m astroglial_morphology /path/to/data --reg-tif
@@ -61,7 +64,13 @@ Examples:
     parser.add_argument(
         "--skip-registration",
         action="store_true",
-        help="Skip registration step (assumes already completed)",
+        help="Unconditionally skip registration step (deprecated - auto-detected now)",
+        default=False,
+    )
+    parser.add_argument(
+        "--force-registration",
+        action="store_true",
+        help="Force registration even if already complete",
         default=False,
     )
     parser.add_argument(
@@ -120,6 +129,7 @@ Examples:
 
         results = pipeline.run(
             skip_registration=args.skip_registration,
+            force_registration=args.force_registration,
             manual_correction=args.manual_correction,
             export_correspondence=args.export_correspondence,
             correspondence_segment_length=args.segment_length,
