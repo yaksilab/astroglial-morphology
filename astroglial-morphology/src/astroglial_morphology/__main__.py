@@ -88,7 +88,7 @@ Examples:
     parser.add_argument(
         "--segment-length",
         type=int,
-        default=6,
+        default=5,
         help="Segment length of subsegment (in microns) used when exporting correspondence data",
     )
     parser.add_argument(
