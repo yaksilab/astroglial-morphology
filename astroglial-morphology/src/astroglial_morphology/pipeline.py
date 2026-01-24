@@ -71,6 +71,7 @@ class Pipeline:
         self.masks = None
         self.classification = None
         self.neck_distance: Optional[int] = None
+        self.segmentation_base_path: Optional[str] = None
 
     def detect_input(self) -> None:
         """Detect input file in the data directory."""
@@ -190,12 +191,17 @@ class Pipeline:
         logger.info("Projections created")
         return self.projections
 
-    def segment_cells(self, interactive_correction: bool = False) -> np.ndarray:
+    def segment_cells(
+        self,
+        interactive_correction: bool = False,
+        projection_type: str = "mean",
+    ) -> np.ndarray:
         """Segment cells using Cellpose.
 
         Args:
             interactive_correction: If True, prompts user to manually correct masks
                                    in Cellpose before continuing
+            projection_type: Projection image to segment on ("mean" or "max_projection")
         """
         if self.projections is None:
             raise RuntimeError("Must create projections before segmentation")
@@ -203,13 +209,21 @@ class Pipeline:
         if self.metadata is None:
             raise RuntimeError("Metadata is required for segmentation")
 
-        logger.info("Segmenting cells on mean projection...")
+        if projection_type not in self.projections:
+            raise ValueError(
+                f"Projection '{projection_type}' not available. "
+                f"Available projections: {', '.join(sorted(self.projections.keys()))}"
+            )
 
-        save_path = os.path.join(self.data_path, "suite2p", "plane0", "mean_image")
+        logger.info("Segmenting cells on %s projection...", projection_type)
+
+        save_name = f"{projection_type}_image"
+        save_path = os.path.join(self.data_path, "suite2p", "plane0", save_name)
+        self.segmentation_base_path = save_path
         diameter = self.config.calculate_diameter(self.metadata.pix_resolution)
 
         self.masks = self.segmenter.segment_img(
-            self.projections["mean"], save_path, diameter=diameter
+            self.projections[projection_type], save_path, diameter=diameter
         )
 
         labels = np.unique(self.masks)
@@ -270,9 +284,12 @@ class Pipeline:
         """
         logger.info("Loading manually corrected masks...")
 
-        mask_path = os.path.join(
-            self.data_path, "suite2p", "plane0", "mean_image_seg.npy"
-        )
+        if self.segmentation_base_path:
+            mask_path = f"{self.segmentation_base_path}_seg.npy"
+        else:
+            mask_path = os.path.join(
+                self.data_path, "suite2p", "plane0", "mean_image_seg.npy"
+            )
 
         self.masks = np.load(mask_path, allow_pickle=True).item()["masks"]
         logger.info(f"Loaded corrected masks with {len(np.unique(self.masks))} labels")
@@ -323,9 +340,12 @@ class Pipeline:
             logger.warning("No cells were segmented; skipping correspondence export")
             return None
 
-        template_seg_path = (
-            Path(self.data_path) / "suite2p" / "plane0" / "mean_image_seg.npy"
-        )
+        if self.segmentation_base_path:
+            template_seg_path = Path(f"{self.segmentation_base_path}_seg.npy")
+        else:
+            template_seg_path = (
+                Path(self.data_path) / "suite2p" / "plane0" / "mean_image_seg.npy"
+            )
         if not template_seg_path.exists():
             raise FileNotFoundError(
                 f"Cannot locate segmentation file for template metadata: {template_seg_path}"
@@ -371,6 +391,7 @@ class Pipeline:
         correspondence_segment_length: int = 100,
         correspondence_delta_x: float = 20.0,
         correspondence_subsegmentation_mode: str = SUBSEGMENTATION_MODE_EQUAL_LENGTH,
+        segmentation_projection: str = "mean",
     ) -> Dict[str, Any]:
         """
         Run the complete pipeline.
@@ -408,7 +429,10 @@ class Pipeline:
         self.create_projections()
 
         # Step 6: Segment cells (with optional interactive correction)
-        self.segment_cells(interactive_correction=manual_correction)
+        self.segment_cells(
+            interactive_correction=manual_correction,
+            projection_type=segmentation_projection,
+        )
 
         # Step 7: Classify cells
         self.classify_cells()

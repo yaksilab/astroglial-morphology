@@ -103,6 +103,12 @@ Examples:
         default=SUBSEGMENTATION_MODE_EQUAL_LENGTH,
         help="How to subsegment each cell: equal_length (fixed pixels) or compartments (soma/middle/distal)",
     )
+    parser.add_argument(
+        "--segmentation-image",
+        choices=["mean", "max_projection"],
+        default="mean",
+        help="Projection image to segment on: mean or max_projection",
+    )
 
     args = parser.parse_args()
 
@@ -135,6 +141,7 @@ Examples:
             correspondence_segment_length=args.segment_length,
             correspondence_delta_x=args.correspondence_delta_x,
             correspondence_subsegmentation_mode=args.subsegmentation_mode,
+            segmentation_projection=args.segmentation_image,
         )
 
         logger.info("Pipeline completed successfully")
