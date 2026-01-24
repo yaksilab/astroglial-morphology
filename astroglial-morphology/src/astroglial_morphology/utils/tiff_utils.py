@@ -197,7 +197,7 @@ def extract_tiff_metadata(tiff_path: str) -> Metadata:
 
                     pix_resolution = num_pixels / length_um
                     logger.info(
-                        f"Calculated pixel resolution: {pix_resolution:.3f} pixels/micrometer "
+                        f"Calculated pixel resolution: {pix_resolution:.3f} pixels/micron "
                         f"({num_pixels} pixels / {length_um:.3f} µm)"
                     )
                 else:

@@ -88,8 +88,8 @@ Examples:
     parser.add_argument(
         "--segment-length",
         type=int,
-        default=30,
-        help="Segment length (in pixels) used when exporting correspondence data",
+        default=6,
+        help="Segment length of subsegment (in microns) used when exporting correspondence data",
     )
     parser.add_argument(
         "--correspondence-delta-x",

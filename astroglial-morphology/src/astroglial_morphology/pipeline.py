@@ -19,7 +19,7 @@ from .correspondence import (
     export_correspondence_products,
     SUBSEGMENTATION_MODE_EQUAL_LENGTH,
 )
-from .utils.lif_utils import lif_to_suite2p_binary
+from .utils.lif_utils import lif_to_suite2p_binary, Metadata
 
 logger = logging.getLogger(__name__)
 
@@ -65,7 +65,7 @@ class Pipeline:
         )
 
         self.file_info = None
-        self.metadata = None
+        self.metadata: Optional[Metadata] = None
         self.suite2p_options = None
         self.projections = None
         self.masks = None
@@ -342,13 +342,14 @@ class Pipeline:
         if neck_distance is None and self.metadata is not None:
             diameter = self.config.calculate_diameter(self.metadata.pix_resolution)
             neck_distance = self.config.calculate_neck_distance(diameter)
+        subsegment_pixel_length = segment_length * self.metadata.pix_resolution
 
         outputs = export_correspondence_products(
             data_path=Path(self.data_path) / "suite2p" / "plane0",
             template_seg_path=template_seg_path,
             masks=self.masks,
             classifications=classification_rows,
-            segment_length=segment_length,
+            segment_length=subsegment_pixel_length,
             delta_x=delta_x,
             subsegmentation_mode=subsegmentation_mode,
             neck_distance=neck_distance,
