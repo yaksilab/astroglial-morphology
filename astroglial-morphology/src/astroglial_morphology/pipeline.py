@@ -164,7 +164,7 @@ class Pipeline:
             raise RuntimeError("Must call prepare_data() before run_registration()")
 
         # Check if registration is already complete
-        if not force and check_registration_complete(self.data_path):
+        if not force and check_registration_complete(self.data_path, self.suite2p_options):
             logger.info("Registration already complete - skipping")
             return False
 
