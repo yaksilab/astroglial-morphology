@@ -213,6 +213,7 @@ class Pipeline:
         )
 
         labels = np.unique(self.masks)
+        labels = labels[labels != 0]
         logger.info(f"Found {len(labels)} cell masks")
 
         if interactive_correction:
