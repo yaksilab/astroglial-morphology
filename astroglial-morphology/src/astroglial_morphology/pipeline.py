@@ -362,7 +362,7 @@ class Pipeline:
         if neck_distance is None and self.metadata is not None:
             diameter = self.config.calculate_diameter(self.metadata.pix_resolution)
             neck_distance = self.config.calculate_neck_distance(diameter)
-        subsegment_pixel_length = segment_length * self.metadata.pix_resolution
+        subsegment_pixel_length = round(segment_length * self.metadata.pix_resolution)
 
         outputs = export_correspondence_products(
             data_path=Path(self.data_path) / "suite2p" / "plane0",
