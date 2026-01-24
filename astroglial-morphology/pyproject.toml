@@ -6,7 +6,7 @@ authors = [
     {name = "Javid Rezai",email = "javid.af@outlook.com"}
 ]
 readme = "README.md"
-requires-python = ">=3.9,<3.11"
+requires-python = ">=3.10,<3.11"
 dependencies = [
     "scikit-image (>=0.24,<0.25)",
     "pillow (>=11.3.0,<12.0.0)",
@@ -23,6 +23,48 @@ dependencies = [
 [tool.poetry]
 packages = [{include = "astroglial_morphology", from = "src"}]
 
+
+[tool.poetry.group.test.dependencies]
+pytest = "^9.0.2"
+pytest-cov = "^6.0.0"
+pytest-mock = "^3.14.0"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = [
+    "-v",
+    "--strict-markers",
+    "--tb=short",
+    "--cov=astroglial_morphology",
+    "--cov-report=term-missing",
+    "--cov-report=html",
+]
+markers = [
+    "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+    "integration: marks tests as integration tests",
+    "unit: marks tests as unit tests",
+]
+
+[tool.coverage.run]
+source = ["src/astroglial_morphology"]
+omit = [
+    "*/tests/*",
+    "*/__pycache__/*",
+    "*/site-packages/*",
+]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "raise AssertionError",
+    "raise NotImplementedError",
+    "if __name__ == .__main__.:",
+    "if TYPE_CHECKING:",
+]
 
 [build-system]
 requires = ["poetry-core>=2.0.0,<3.0.0"]

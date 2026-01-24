@@ -374,8 +374,6 @@ def create_projections(
     projections = {
         "mean": processor.get_mean_image(batch_size=batch_size),
         "max_projection": processor.get_max_projection(batch_size=batch_size),
-        "std": processor.get_std_image(batch_size=batch_size),
-        "sum": processor.get_sum_image(batch_size=batch_size),
     }
 
     if save_images:

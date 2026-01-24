@@ -24,8 +24,11 @@ def main() -> None:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  # Process TIFF or LIF file
+  # Process TIFF or LIF file (auto-detects if registration already done)
   python -m astroglial_morphology /path/to/data
+  
+  # Force re-registration even if already complete
+  python -m astroglial_morphology /path/to/data --force-registration
   
   # Save registered TIFF (large files!)
   python -m astroglial_morphology /path/to/data --reg-tif
@@ -61,7 +64,13 @@ Examples:
     parser.add_argument(
         "--skip-registration",
         action="store_true",
-        help="Skip registration step (assumes already completed)",
+        help="Unconditionally skip registration step (deprecated - auto-detected now)",
+        default=False,
+    )
+    parser.add_argument(
+        "--force-registration",
+        action="store_true",
+        help="Force registration even if already complete",
         default=False,
     )
     parser.add_argument(
@@ -79,8 +88,8 @@ Examples:
     parser.add_argument(
         "--segment-length",
         type=int,
-        default=30,
-        help="Segment length (in pixels) used when exporting correspondence data",
+        default=5,
+        help="Segment length of subsegment (in microns) used when exporting correspondence data",
     )
     parser.add_argument(
         "--correspondence-delta-x",
@@ -93,6 +102,12 @@ Examples:
         choices=sorted(VALID_SUBSEGMENTATION_MODES),
         default=SUBSEGMENTATION_MODE_EQUAL_LENGTH,
         help="How to subsegment each cell: equal_length (fixed pixels) or compartments (soma/middle/distal)",
+    )
+    parser.add_argument(
+        "--segmentation-image",
+        choices=["mean", "max_projection"],
+        default="mean",
+        help="Projection image to segment on: mean or max_projection",
     )
 
     args = parser.parse_args()
@@ -120,11 +135,13 @@ Examples:
 
         results = pipeline.run(
             skip_registration=args.skip_registration,
+            force_registration=args.force_registration,
             manual_correction=args.manual_correction,
             export_correspondence=args.export_correspondence,
             correspondence_segment_length=args.segment_length,
             correspondence_delta_x=args.correspondence_delta_x,
             correspondence_subsegmentation_mode=args.subsegmentation_mode,
+            segmentation_projection=args.segmentation_image,
         )
 
         logger.info("Pipeline completed successfully")

@@ -78,7 +78,7 @@ def extract_lif_metadata(lif_path: str, series_index: int = 0) -> Metadata:
     if len(img.scale) >= 2:
         # Scale appears to already be in microns/pixel based on typical imaging values
         pix_resolution = img.scale[0]  # x-scale in microns/pixel
-        logger.info(f"Pixel resolution: {pix_resolution:.4f} microns/pixel")
+        logger.info(f"Pixel resolution: {pix_resolution:.4f} pixels/micron")
     else:
         logger.warning("Could not extract pixel resolution from LIF, using default 1.0")
         pix_resolution = 1.0

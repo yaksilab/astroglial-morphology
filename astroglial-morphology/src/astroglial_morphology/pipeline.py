@@ -8,7 +8,10 @@ import numpy as np
 
 from .config import PipelineConfig
 from .io import detect_input_file, load_metadata, InputFormat
-from .registration import do_registration
+from .registration import (
+    do_registration,
+    check_registration_complete,
+)
 from .binary_utils import create_projections
 from .segmentation import Segmentation
 from .classifier import classify_cells
@@ -16,7 +19,7 @@ from .correspondence import (
     export_correspondence_products,
     SUBSEGMENTATION_MODE_EQUAL_LENGTH,
 )
-from .utils.lif_utils import lif_to_suite2p_binary
+from .utils.lif_utils import lif_to_suite2p_binary, Metadata
 
 logger = logging.getLogger(__name__)
 
@@ -62,12 +65,13 @@ class Pipeline:
         )
 
         self.file_info = None
-        self.metadata = None
+        self.metadata: Optional[Metadata] = None
         self.suite2p_options = None
         self.projections = None
         self.masks = None
         self.classification = None
         self.neck_distance: Optional[int] = None
+        self.segmentation_base_path: Optional[str] = None
 
     def detect_input(self) -> None:
         """Detect input file in the data directory."""
@@ -88,22 +92,47 @@ class Pipeline:
         """
         Prepare data for Suite2p processing.
 
-        For LIF files, this converts to binary format.
+        For LIF files, this converts to binary format if not already converted.
         For TIFF files, no preparation is needed.
         """
         if self.file_info is None or self.metadata is None:
             raise RuntimeError("Must call detect_input() and load_metadata() first")
 
         if self.file_info.format == InputFormat.LIF:
-            logger.info("Converting LIF to Suite2p binary format...")
-            ops_from_lif = lif_to_suite2p_binary(
-                lif_path=self.file_info.path_str,
-                output_dir=self.data_path,
-                series_index=self.config.LIF_SERIES_INDEX,
-                channel_index=self.config.LIF_CHANNEL_INDEX,
-                plane_index=self.config.LIF_PLANE_INDEX,
-            )
-            logger.info("LIF conversion completed")
+            # Check if LIF has already been converted to binary
+            suite2p_path = Path(self.data_path) / "suite2p" / "plane0"
+            data_bin_path = suite2p_path / "data.bin"
+            ops_npy_path = suite2p_path / "ops.npy"
+
+            if data_bin_path.exists() and ops_npy_path.exists():
+                logger.info("LIF file already converted to Suite2p binary format")
+                # Load existing ops to get Lys and Lxs
+                try:
+                    existing_ops = np.load(ops_npy_path, allow_pickle=True).item()
+                    ops_from_lif = {
+                        "Lys": existing_ops.get("Lys", [existing_ops["Ly"]]),
+                        "Lxs": existing_ops.get("Lxs", [existing_ops["Lx"]]),
+                    }
+                except Exception as e:
+                    logger.warning(f"Failed to load existing ops.npy: {e}")
+                    logger.info("Re-converting LIF file...")
+                    ops_from_lif = lif_to_suite2p_binary(
+                        lif_path=self.file_info.path_str,
+                        output_dir=self.data_path,
+                        series_index=self.config.LIF_SERIES_INDEX,
+                        channel_index=self.config.LIF_CHANNEL_INDEX,
+                        plane_index=self.config.LIF_PLANE_INDEX,
+                    )
+            else:
+                logger.info("Converting LIF to Suite2p binary format...")
+                ops_from_lif = lif_to_suite2p_binary(
+                    lif_path=self.file_info.path_str,
+                    output_dir=self.data_path,
+                    series_index=self.config.LIF_SERIES_INDEX,
+                    channel_index=self.config.LIF_CHANNEL_INDEX,
+                    plane_index=self.config.LIF_PLANE_INDEX,
+                )
+                logger.info("LIF conversion completed")
 
             # Build Suite2p options for binary input
             self.suite2p_options = self.config.build_suite2p_options(
@@ -122,16 +151,29 @@ class Pipeline:
                 reg_tif=self.reg_tif,
             )
 
-    def run_registration(self) -> None:
-        """Run Suite2p motion correction."""
+    def run_registration(self, force: bool = False) -> bool:
+        """Run Suite2p motion correction.
+
+        Args:
+            force: If True, run registration even if already complete
+
+        Returns:
+            True if registration was performed, False if skipped
+        """
         if self.suite2p_options is None:
             raise RuntimeError("Must call prepare_data() before run_registration()")
+
+        # Check if registration is already complete
+        if not force and check_registration_complete(self.data_path, self.suite2p_options):
+            logger.info("Registration already complete - skipping")
+            return False
 
         logger.info("Starting motion correction...")
         logger.debug(f"Suite2p options: {self.suite2p_options}")
 
         do_registration(self.data_path, self.suite2p_options)
         logger.info("Registration completed")
+        return True
 
     def create_projections(self) -> Dict[str, np.ndarray]:
         """Create projection images from registered data."""
@@ -149,12 +191,17 @@ class Pipeline:
         logger.info("Projections created")
         return self.projections
 
-    def segment_cells(self, interactive_correction: bool = False) -> np.ndarray:
+    def segment_cells(
+        self,
+        interactive_correction: bool = False,
+        projection_type: str = "mean",
+    ) -> np.ndarray:
         """Segment cells using Cellpose.
 
         Args:
             interactive_correction: If True, prompts user to manually correct masks
                                    in Cellpose before continuing
+            projection_type: Projection image to segment on ("mean" or "max_projection")
         """
         if self.projections is None:
             raise RuntimeError("Must create projections before segmentation")
@@ -162,16 +209,25 @@ class Pipeline:
         if self.metadata is None:
             raise RuntimeError("Metadata is required for segmentation")
 
-        logger.info("Segmenting cells on mean projection...")
+        if projection_type not in self.projections:
+            raise ValueError(
+                f"Projection '{projection_type}' not available. "
+                f"Available projections: {', '.join(sorted(self.projections.keys()))}"
+            )
 
-        save_path = os.path.join(self.data_path, "suite2p", "plane0", "mean_image")
+        logger.info("Segmenting cells on %s projection...", projection_type)
+
+        save_name = f"{projection_type}_image"
+        save_path = os.path.join(self.data_path, "suite2p", "plane0", save_name)
+        self.segmentation_base_path = save_path
         diameter = self.config.calculate_diameter(self.metadata.pix_resolution)
 
         self.masks = self.segmenter.segment_img(
-            self.projections["mean"], save_path, diameter=diameter
+            self.projections[projection_type], save_path, diameter=diameter
         )
 
         labels = np.unique(self.masks)
+        labels = labels[labels != 0]
         logger.info(f"Found {len(labels)} cell masks")
 
         if interactive_correction:
@@ -228,9 +284,12 @@ class Pipeline:
         """
         logger.info("Loading manually corrected masks...")
 
-        mask_path = os.path.join(
-            self.data_path, "suite2p", "plane0", "mean_image_seg.npy"
-        )
+        if self.segmentation_base_path:
+            mask_path = f"{self.segmentation_base_path}_seg.npy"
+        else:
+            mask_path = os.path.join(
+                self.data_path, "suite2p", "plane0", "mean_image_seg.npy"
+            )
 
         self.masks = np.load(mask_path, allow_pickle=True).item()["masks"]
         logger.info(f"Loaded corrected masks with {len(np.unique(self.masks))} labels")
@@ -281,9 +340,12 @@ class Pipeline:
             logger.warning("No cells were segmented; skipping correspondence export")
             return None
 
-        template_seg_path = (
-            Path(self.data_path) / "suite2p" / "plane0" / "mean_image_seg.npy"
-        )
+        if self.segmentation_base_path:
+            template_seg_path = Path(f"{self.segmentation_base_path}_seg.npy")
+        else:
+            template_seg_path = (
+                Path(self.data_path) / "suite2p" / "plane0" / "mean_image_seg.npy"
+            )
         if not template_seg_path.exists():
             raise FileNotFoundError(
                 f"Cannot locate segmentation file for template metadata: {template_seg_path}"
@@ -300,13 +362,14 @@ class Pipeline:
         if neck_distance is None and self.metadata is not None:
             diameter = self.config.calculate_diameter(self.metadata.pix_resolution)
             neck_distance = self.config.calculate_neck_distance(diameter)
+        subsegment_pixel_length = round(segment_length * self.metadata.pix_resolution)
 
         outputs = export_correspondence_products(
             data_path=Path(self.data_path) / "suite2p" / "plane0",
             template_seg_path=template_seg_path,
             masks=self.masks,
             classifications=classification_rows,
-            segment_length=segment_length,
+            segment_length=subsegment_pixel_length,
             delta_x=delta_x,
             subsegmentation_mode=subsegmentation_mode,
             neck_distance=neck_distance,
@@ -322,17 +385,20 @@ class Pipeline:
     def run(
         self,
         skip_registration: bool = False,
+        force_registration: bool = False,
         manual_correction: bool = False,
         export_correspondence: bool = False,
         correspondence_segment_length: int = 100,
         correspondence_delta_x: float = 20.0,
         correspondence_subsegmentation_mode: str = SUBSEGMENTATION_MODE_EQUAL_LENGTH,
+        segmentation_projection: str = "mean",
     ) -> Dict[str, Any]:
         """
         Run the complete pipeline.
 
         Args:
-            skip_registration: If True, skip registration step (assumes already done)
+            skip_registration: If True, unconditionally skip registration (deprecated, auto-detected now)
+            force_registration: If True, run registration even if already complete
             manual_correction: If True, load manually corrected masks
             export_correspondence: Build correspondence/trace outputs when True
             correspondence_segment_length: Segment length in pixels for subsegmentation
@@ -353,15 +419,20 @@ class Pipeline:
         # Step 3: Prepare data (always needed for suite2p_options)
         self.prepare_data()
 
-        # Step 4: Run registration (unless skipped)
-        if not skip_registration:
-            self.run_registration()
+        # Step 4: Run registration (auto-detected or forced)
+        if skip_registration:
+            logger.info("Registration explicitly skipped by user")
+        else:
+            self.run_registration(force=force_registration)
 
         # Step 5: Create projections
         self.create_projections()
 
         # Step 6: Segment cells (with optional interactive correction)
-        self.segment_cells(interactive_correction=manual_correction)
+        self.segment_cells(
+            interactive_correction=manual_correction,
+            projection_type=segmentation_projection,
+        )
 
         # Step 7: Classify cells
         self.classify_cells()
