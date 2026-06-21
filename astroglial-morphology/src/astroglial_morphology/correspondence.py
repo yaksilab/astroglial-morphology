@@ -31,6 +31,32 @@ VALID_SUBSEGMENTATION_MODES = {
 }
 
 
+def _count_unique_nonzero(values: np.ndarray) -> int:
+    if values.size == 0:
+        return 0
+    unique = np.unique(values)
+    return int(np.sum(unique != 0))
+
+
+def _log_subsegment_counts(stage: str, data_matrix: np.ndarray) -> None:
+    if data_matrix.size == 0:
+        logger.info("%s: no rows", stage)
+        return
+
+    cell_labels = data_matrix[:, 0]
+    sub_labels = data_matrix[:, 1] if data_matrix.shape[1] > 1 else np.array([])
+    sub_numbers = data_matrix[:, 2] if data_matrix.shape[1] > 2 else np.array([])
+
+    logger.info(
+        "%s: rows=%d, unique_cells=%d, unique_subsegments=%d, unique_subsegment_numbers=%d",
+        stage,
+        data_matrix.shape[0],
+        _count_unique_nonzero(cell_labels),
+        _count_unique_nonzero(sub_labels),
+        _count_unique_nonzero(sub_numbers),
+    )
+
+
 def _partition_labels(classifications: Classifications) -> tuple[list[int], list[int]]:
     upper = [label for cls, label in classifications if cls == 1]
     lower = [label for cls, label in classifications if cls == 2]
@@ -380,6 +406,11 @@ def export_correspondence_products(
     data_path = Path(data_path)
     template_seg_path = Path(template_seg_path)
 
+    logger.info(
+        "Starting correspondence export: mask labels=%d",
+        _count_unique_nonzero(masks),
+    )
+
     try:
         correspondence_matrix = build_correspondence_matrix(
             masks=masks, classifications=classifications, delta_x=delta_x
@@ -387,6 +418,8 @@ def export_correspondence_products(
     except ValueError as exc:
         logger.warning("Skipping correspondence export: %s", exc)
         return None
+
+    _log_subsegment_counts("Correspondence matrix", correspondence_matrix)
     sub_segmented_data = _subsegment_correspondence(
         correspondence_matrix,
         mode=subsegmentation_mode,
@@ -395,8 +428,15 @@ def export_correspondence_products(
     )
     sub_segmented_data = sub_segmented_data.astype(np.int32)
 
+    _log_subsegment_counts("Subsegmented correspondence", sub_segmented_data)
+
     subsegmented_mask = create_cp_mask(sub_segmented_data, masks)
     subseg_path = data_path / mask_filename
+
+    logger.info(
+        "Subsegmented mask labels=%d",
+        _count_unique_nonzero(subsegmented_mask),
+    )
 
     _save_subsegmented_mask(template_seg_path, subseg_path, subsegmented_mask)
     logger.info("Saved subsegmented masks to %s", subseg_path)
@@ -414,6 +454,15 @@ def export_correspondence_products(
     mapping = create_suite2p_cellpose_roi_mapping(
         subsegmented_mask, str(suite2p_folder)
     )
+    if mapping:
+        missing = sum(1 for value in mapping.values() if value is None)
+        logger.info(
+            "Suite2p/Cellpose mapping: total=%d, missing=%d",
+            len(mapping),
+            missing,
+        )
+    else:
+        logger.info("Suite2p/Cellpose mapping is empty")
     reversed_mapping = {
         cp_label: s2p_idx
         for s2p_idx, cp_label in mapping.items()
@@ -423,6 +472,11 @@ def export_correspondence_products(
     mapped_trace_matrices: dict[int, np.ndarray] = {}
     for channel, traces in extracted_traces.items():
         mapped_trace_matrices[channel] = map_trace(traces, mapping)
+        logger.info(
+            "Mapped channel %d traces matrix shape: %s",
+            channel,
+            mapped_trace_matrices[channel].shape,
+        )
 
     suite2p_column = np.array(
         [reversed_mapping.get(label, -1) for label in sub_segmented_data[:, 1]],
@@ -431,6 +485,8 @@ def export_correspondence_products(
     mapped_subsegmented_data = np.column_stack(
         (suite2p_column, sub_segmented_data)
     ).astype(np.int32)
+
+    _log_subsegment_counts("Mapped subsegmented data", mapped_subsegmented_data[:, 1:])
 
     outputs = {
         "subsegmented_mask_path": subseg_path,

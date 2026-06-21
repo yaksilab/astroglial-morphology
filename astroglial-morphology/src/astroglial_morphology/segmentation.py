@@ -95,6 +95,10 @@ class Segmentation:
             **model_eval_params,  # pyright: ignore[reportArgumentType]
         )
 
+        unique_labels = np.unique(masks)
+        mask_count = int(np.sum(unique_labels != 0))
+        logger.info("Segmentation produced %d masks", mask_count)
+
         masks_flows_to_seg(img, masks, flows, save_file_name)
         return masks
 

@@ -6,9 +6,9 @@ import numpy as np
 from skimage import morphology
 from scipy import ndimage
 from skimage.measure import regionprops
-import logging
+from .logging_config import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 def find_skeleton_endpoints(skeleton):
@@ -203,6 +203,16 @@ def classify_cells(masks, neck_distance=50):
             "area": prop.area,
             "neck_distance": neck_distance,
         }
+
+    upper_count = sum(1 for cls, _ in classifications if cls == 1)
+    lower_count = sum(1 for cls, _ in classifications if cls == 2)
+    logger.info(
+        "Classified cells: total_masks=%d, classified=%d (upper=%d, lower=%d)",
+        len(props),
+        len(classifications),
+        upper_count,
+        lower_count,
+    )
 
     return classifications, classifications_pp
 
