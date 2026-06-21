@@ -74,6 +74,25 @@ Examples:
         default=False,
     )
     parser.add_argument(
+        "--alignment-only",
+        action="store_true",
+        help="Stop after registration and projection creation",
+        default=False,
+    )
+    parser.add_argument(
+        "--registration-channel",
+        type=int,
+        choices=[0, 1],
+        default=0,
+        help="Zero-based channel used to calculate registration shifts",
+    )
+    parser.add_argument(
+        "--regmetrics",
+        action="store_true",
+        help="Enable Suite2p registration metrics (can require substantial memory)",
+        default=False,
+    )
+    parser.add_argument(
         "--manual-correction",
         action="store_true",
         help="Load manually corrected masks instead of running segmentation",
@@ -109,6 +128,17 @@ Examples:
         default="mean",
         help="Projection image to segment on: mean or max_projection",
     )
+    parser.add_argument(
+        "--segmentation-channel",
+        choices=["both", "0", "1"],
+        default="both",
+        help="Channel mode to segment: both, 0, or 1",
+    )
+    parser.add_argument(
+        "--trace-channels",
+        default=None,
+        help="Comma-separated zero-based channels to export traces for, e.g. 0 or 0,1",
+    )
 
     args = parser.parse_args()
 
@@ -142,6 +172,11 @@ Examples:
             correspondence_delta_x=args.correspondence_delta_x,
             correspondence_subsegmentation_mode=args.subsegmentation_mode,
             segmentation_projection=args.segmentation_image,
+            segmentation_channel=args.segmentation_channel,
+            registration_channel=args.registration_channel,
+            trace_channels=args.trace_channels,
+            do_regmetrics=args.regmetrics,
+            alignment_only=args.alignment_only,
         )
 
         logger.info("Pipeline completed successfully")
@@ -153,11 +188,20 @@ Examples:
                 corr_outputs["correspondence_matrix_path"],
                 corr_outputs["correspondence_matrix_mat_path"],
             )
-            logger.info(
-                "Trace matrix: %s (npy), %s (mat)",
-                corr_outputs["trace_matrix_path"],
-                corr_outputs["trace_matrix_mat_path"],
-            )
+            trace_paths = corr_outputs.get("trace_matrix_paths")
+            trace_mat_paths = corr_outputs.get("trace_matrix_mat_paths")
+            if trace_paths and trace_mat_paths:
+                logger.info(
+                    "Trace matrices: %s (npy), %s (mat)",
+                    trace_paths,
+                    trace_mat_paths,
+                )
+            else:
+                logger.info(
+                    "Trace matrix: %s (npy), %s (mat)",
+                    corr_outputs["trace_matrix_path"],
+                    corr_outputs["trace_matrix_mat_path"],
+                )
 
     except Exception as e:
         logger.exception(f"Pipeline failed with error: {e}")

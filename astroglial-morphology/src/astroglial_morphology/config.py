@@ -52,6 +52,7 @@ class PipelineConfig:
         "keep_movie_raw": False,
         "maxregshift": 0.11,  # 11% of frame dimension
         "align_by_chan": 1,
+        "do_regmetrics": False,
         "subpixel": 10,  # High-precision registration
         "nonrigid": False,  # Rigid registration only
         "roidetect": False,  # We don't need ROI detection

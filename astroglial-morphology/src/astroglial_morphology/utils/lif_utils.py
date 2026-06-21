@@ -3,7 +3,7 @@
 import logging
 import numpy as np
 from pathlib import Path
-from typing import Dict, Any
+from typing import Dict, Any, Optional, Sequence, Union
 from readlif.reader import LifFile
 
 # Import Metadata class to maintain compatibility with existing pipeline
@@ -60,7 +60,7 @@ def extract_lif_metadata(lif_path: str, series_index: int = 0) -> Metadata:
     if img.channels > 1:
         logger.warning(
             f"Multiple channels detected ({img.channels} channels). "
-            f"Only channel 0 will be processed."
+            f"Up to two channels can be converted for Suite2p processing."
         )
 
     # Extract dimensions
@@ -105,11 +105,53 @@ def extract_lif_metadata(lif_path: str, series_index: int = 0) -> Metadata:
     return metadata
 
 
+def _normalize_channel_indices(
+    channel_index: Optional[Union[int, Sequence[int]]],
+    available_channels: int,
+) -> list[int]:
+    if channel_index is None:
+        if available_channels > 2:
+            logger.warning(
+                "LIF file has %d channels; only channels 0 and 1 are supported",
+                available_channels,
+            )
+        return list(range(min(available_channels, 2)))
+
+    if isinstance(channel_index, int):
+        channel_indices = [channel_index]
+    else:
+        channel_indices = list(channel_index)
+
+    if not channel_indices:
+        raise ValueError("At least one channel must be selected for conversion")
+    if len(channel_indices) > 2:
+        raise ValueError("Suite2p conversion supports at most two channels")
+    if len(set(channel_indices)) != len(channel_indices):
+        raise ValueError("Duplicate channel indices are not allowed")
+
+    for index in channel_indices:
+        if index < 0 or index >= available_channels:
+            raise ValueError(
+                f"Channel index {index} out of range. "
+                f"LIF file has {available_channels} channels."
+            )
+
+    return channel_indices
+
+
+def _frame_to_int16(frame_np: np.ndarray) -> np.ndarray:
+    if frame_np.dtype == np.uint16:
+        return (frame_np // 2).astype(np.int16)
+    if frame_np.dtype == np.uint8:
+        return frame_np.astype(np.int16) * 128
+    return frame_np.astype(np.int16)
+
+
 def lif_to_suite2p_binary(
     lif_path: str,
     output_dir: str,
     series_index: int = 0,
-    channel_index: int = 0,
+    channel_index: Optional[Union[int, Sequence[int]]] = None,
     plane_index: int = 0,
 ) -> Dict[str, Any]:
     """
@@ -138,12 +180,7 @@ def lif_to_suite2p_binary(
     # Extract metadata
     metadata = extract_lif_metadata(lif_path, series_index)
 
-    # Validate channel and plane indices
-    if channel_index >= metadata.nchannels:
-        raise ValueError(
-            f"Channel index {channel_index} out of range. "
-            f"LIF file has {metadata.nchannels} channels."
-        )
+    channel_indices = _normalize_channel_indices(channel_index, metadata.nchannels)
 
     if plane_index >= metadata.nplanes:
         raise ValueError(
@@ -157,10 +194,17 @@ def lif_to_suite2p_binary(
     plane_path = suite2p_path / f"plane{plane_index}"
     plane_path.mkdir(parents=True, exist_ok=True)
 
-    bin_file_path = plane_path / "data.bin"
+    bin_file_paths = [
+        plane_path / ("data.bin" if output_index == 0 else "data_chan2.bin")
+        for output_index, _ in enumerate(channel_indices)
+    ]
     ops_file_path = plane_path / "ops.npy"
 
-    logger.info(f"Creating binary file: {bin_file_path}")
+    logger.info(
+        "Creating Suite2p binary files for channels %s: %s",
+        channel_indices,
+        [str(path) for path in bin_file_paths],
+    )
 
     # Open LIF file and get image series
     lif = LifFile(lif_path)
@@ -174,45 +218,43 @@ def lif_to_suite2p_binary(
 
     logger.info(f"Frame dimensions: {Ly} x {Lx}, {nframes} frames")
 
-    # Write frames to binary file
-    frame_count = 0
-    with open(bin_file_path, "wb") as f:
-        # Iterate through time frames
-        for t_idx in range(nframes):
-            # Get frame as PIL Image, then convert to numpy
-            # readlif returns PIL Image objects, not numpy arrays
-            frame_pil = img.get_frame(z=plane_index, t=t_idx, c=channel_index)
-            frame_np = np.array(frame_pil)
+    frame_counts = {channel: 0 for channel in channel_indices}
+    with open(bin_file_paths[0], "wb") as f0:
+        file_handles = [f0]
+        if len(bin_file_paths) == 2:
+            file_handles.append(open(bin_file_paths[1], "wb"))
 
-            # frame_np is now a numpy array with shape (Ly, Lx)
-            # dtype depends on bit depth - typically uint8 or uint16
+        try:
+            for t_idx in range(nframes):
+                for output_index, source_channel in enumerate(channel_indices):
+                    frame_pil = img.get_frame(
+                        z=plane_index, t=t_idx, c=source_channel
+                    )
+                    frame_np = np.array(frame_pil)
+                    frame_data = _frame_to_int16(frame_np)
 
-            # Convert to int16 (Suite2p convention)
-            if frame_np.dtype == np.uint16:
-                # Divide by 2 to fit uint16 range into int16 range
-                frame_data = (frame_np // 2).astype(np.int16)
-            elif frame_np.dtype == np.uint8:
-                # Scale uint8 to int16 range (0-255 -> 0-32640)
-                # Multiply by 128 to use more of the int16 range
-                frame_data = frame_np.astype(np.int16) * 128
-            else:
-                frame_data = frame_np.astype(np.int16)
+                    if frame_data.shape != (Ly, Lx):
+                        logger.warning(
+                            f"Frame {t_idx} channel {source_channel} has unexpected "
+                            f"shape {frame_data.shape}, expected ({Ly}, {Lx})"
+                        )
 
-            # Ensure correct shape
-            if frame_data.shape != (Ly, Lx):
-                logger.warning(
-                    f"Frame {t_idx} has unexpected shape {frame_data.shape}, "
-                    f"expected ({Ly}, {Lx})"
-                )
+                    file_handles[output_index].write(frame_data.tobytes())
+                    frame_counts[source_channel] += 1
 
-            # Write as raw bytes
-            f.write(bytearray(frame_data))
-            frame_count += 1
+                if (t_idx + 1) % 100 == 0 or t_idx == nframes - 1:
+                    logger.info(f"Processed {t_idx + 1}/{nframes} frames")
+        finally:
+            for handle in file_handles[1:]:
+                handle.close()
 
-            if (t_idx + 1) % 100 == 0 or t_idx == nframes - 1:
-                logger.info(f"Processed {t_idx + 1}/{nframes} frames")
-
-    logger.info(f"Successfully wrote {frame_count} frames to {bin_file_path}")
+    for source_channel, path in zip(channel_indices, bin_file_paths):
+        logger.info(
+            "Successfully wrote %d frames for channel %d to %s",
+            frame_counts[source_channel],
+            source_channel,
+            path,
+        )
 
     # Create ops dictionary (Suite2p metadata)
     # When input_format='binary', Suite2p expects Lys and Lxs arrays
@@ -222,11 +264,14 @@ def lif_to_suite2p_binary(
         "Lys": [int(Ly)],  # Array of frame heights for each plane
         "Lxs": [int(Lx)],  # Array of frame widths for each plane
         "nframes": int(nframes),
-        "nchannels": int(metadata.nchannels),
+        "nchannels": int(len(channel_indices)),
+        "source_nchannels": int(metadata.nchannels),
+        "channel_indices": channel_indices,
         "nplanes": int(metadata.nplanes),
         "fs": float(metadata.fs),
         "tau": 3.0,  # Default decay time constant
-        "reg_file": str(bin_file_path),
+        "reg_file": str(bin_file_paths[0]),
+        "functional_chan": 1,
         "meanImg": None,  # Will be calculated later by Suite2p or BinaryDataProcessor
         # Add other Suite2p-specific parameters with defaults
         "do_registration": True,
@@ -238,6 +283,9 @@ def lif_to_suite2p_binary(
         "subpixel": 10,
         "nonrigid": False,
     }
+    if len(bin_file_paths) > 1:
+        ops["reg_file_chan2"] = str(bin_file_paths[1])
+        ops["meanImg_chan2"] = None
 
     # Save ops file (allow_pickle=True required for dict)
     np.save(ops_file_path, ops, allow_pickle=True)  # type: ignore

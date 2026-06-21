@@ -218,6 +218,150 @@ def _save_subsegmented_mask(
     np.save(destination, metadata)
 
 
+def _normalize_trace_channels(
+    trace_channels: Optional[Sequence[int]],
+    nchannels: int,
+) -> list[int]:
+    if trace_channels is None:
+        if nchannels > 1:
+            raise ValueError(
+                "trace_channels must be specified when exporting traces "
+                "from multi-channel data"
+            )
+        return [0]
+
+    channels = [int(channel) for channel in trace_channels]
+    if not channels:
+        raise ValueError("At least one trace channel must be selected")
+    if len(set(channels)) != len(channels):
+        raise ValueError("Duplicate trace channels are not allowed")
+    for channel in channels:
+        if channel < 0 or channel >= nchannels:
+            raise ValueError(
+                f"Trace channel {channel} is out of range for {nchannels} channel(s)"
+            )
+    return channels
+
+
+def _build_suite2p_stat(masks: np.ndarray, ly: int, lx: int, ops: dict) -> np.ndarray:
+    from suite2p.detection import roi_stats
+    from suite2p.extraction.masks import create_masks
+
+    stat = []
+    for label in np.unique(masks)[1:]:
+        ypix, xpix = np.nonzero(masks == label)
+        npix = len(ypix)
+        stat.append(
+            {
+                "ypix": ypix,
+                "xpix": xpix,
+                "npix": npix,
+                "lam": np.ones(npix, np.float32),
+                "med": [np.mean(ypix), np.mean(xpix)],
+            }
+        )
+
+    stat = roi_stats(np.array(stat), ly, lx)
+    create_masks(stat, ly, lx, ops)
+    return stat
+
+
+def _extract_suite2p_traces_for_channels(
+    *,
+    data_path: Path,
+    mask_filename: str,
+    trace_channels: Optional[Sequence[int]],
+) -> tuple[Path, dict[int, np.ndarray]]:
+    import contextlib
+    import os
+
+    from suite2p import extraction_wrapper, classify
+    from suite2p.classification import builtin_classfile
+    from suite2p.extraction import preprocess, oasis
+    from suite2p.io import BinaryFile
+
+    ops_file = data_path / "ops.npy"
+    if not ops_file.exists():
+        raise FileNotFoundError(f"Ops file not found: {ops_file}")
+
+    ops = np.load(ops_file, allow_pickle=True).item()
+    nchannels = int(ops.get("nchannels", 1))
+    channels = _normalize_trace_channels(trace_channels, nchannels)
+    ly = int(ops["Ly"])
+    lx = int(ops["Lx"])
+    nframes = int(ops["nframes"])
+
+    mask_path = data_path / mask_filename
+    if not mask_path.exists():
+        raise FileNotFoundError(f"Mask file not found: {mask_path}")
+    masks = np.load(mask_path, allow_pickle=True).item()["masks"]
+    stat = _build_suite2p_stat(masks, ly, lx, ops)
+
+    data_bin = data_path / "data.bin"
+    data_chan2_bin = data_path / "data_chan2.bin"
+    if nchannels > 1 and not data_chan2_bin.exists():
+        raise FileNotFoundError(
+            f"ops.npy declares {nchannels} channels but {data_chan2_bin} is missing"
+        )
+
+    output_dir = data_path / "cellpose_suite2p_output"
+    os.makedirs(output_dir, exist_ok=True)
+
+    chan2_context = (
+        BinaryFile(ly, lx, str(data_chan2_bin), n_frames=nframes)
+        if data_chan2_bin.exists()
+        else contextlib.nullcontext(None)
+    )
+    with BinaryFile(ly, lx, str(data_bin), n_frames=nframes) as f_reg, chan2_context as f_reg_chan2:
+        stat_after_extraction, f_ch0, fneu_ch0, f_ch1, fneu_ch1 = extraction_wrapper(
+            stat, f_reg, f_reg_chan2=f_reg_chan2, ops=ops
+        )
+
+    iscell = classify(stat=stat_after_extraction, classfile=builtin_classfile)
+    np.save(output_dir / "stat.npy", stat_after_extraction)
+    np.save(output_dir / "iscell.npy", iscell)
+    np.save(output_dir / "ops.npy", ops)
+
+    extracted: dict[int, np.ndarray] = {}
+    for channel in channels:
+        if channel == 0:
+            traces = f_ch0
+            neuropil = fneu_ch0
+            legacy_prefix = ""
+        else:
+            if f_ch1 is None or fneu_ch1 is None:
+                raise RuntimeError("Suite2p did not return channel 1 traces")
+            traces = f_ch1
+            neuropil = fneu_ch1
+            legacy_prefix = "_chan2"
+
+        dff = traces.copy() - ops["neucoeff"] * neuropil
+        dff = preprocess(
+            F=dff,
+            baseline=ops["baseline"],
+            win_baseline=ops["win_baseline"],
+            sig_baseline=ops["sig_baseline"],
+            fs=ops["fs"],
+            prctile_baseline=ops["prctile_baseline"],
+        )
+        spks = oasis(F=dff, batch_size=ops["batch_size"], tau=ops["tau"], fs=ops["fs"])
+
+        np.save(output_dir / f"F_ch{channel}.npy", traces)
+        np.save(output_dir / f"Fneu_ch{channel}.npy", neuropil)
+        np.save(output_dir / f"spks_ch{channel}.npy", spks)
+        if legacy_prefix == "":
+            np.save(output_dir / "F.npy", traces)
+            np.save(output_dir / "Fneu.npy", neuropil)
+            np.save(output_dir / "spks.npy", spks)
+        else:
+            np.save(output_dir / f"F{legacy_prefix}.npy", traces)
+            np.save(output_dir / f"Fneu{legacy_prefix}.npy", neuropil)
+
+        extracted[channel] = traces
+
+    return output_dir, extracted
+
+
 def export_correspondence_products(
     *,
     data_path: Path,
@@ -229,6 +373,7 @@ def export_correspondence_products(
     subsegmentation_mode: str = SUBSEGMENTATION_MODE_EQUAL_LENGTH,
     neck_distance: Optional[int] = None,
     mask_filename: str = "subsegmented_masks_seg.npy",
+    trace_channels: Optional[Sequence[int]] = None,
 ) -> Optional[Dict[str, Any]]:
     """Run the full correspondence workflow and write artifacts to disk."""
 
@@ -256,18 +401,16 @@ def export_correspondence_products(
     _save_subsegmented_mask(template_seg_path, subseg_path, subsegmented_mask)
     logger.info("Saved subsegmented masks to %s", subseg_path)
 
-    try:
-        from astroglial_segmentation import create_suite2p_masks_extract_traces
-    except ImportError as exc:  # pragma: no cover - optional dependency runtime check
-        raise ImportError(
-            "The astroglial_segmentation package is required to extract traces. "
-            "Install it or update your environment."
-        ) from exc
+    suite2p_folder, extracted_traces = _extract_suite2p_traces_for_channels(
+        data_path=data_path,
+        mask_filename=mask_filename,
+        trace_channels=trace_channels,
+    )
+    logger.info(
+        "Created Suite2p traces for channels: %s",
+        ", ".join(str(channel) for channel in sorted(extracted_traces)),
+    )
 
-    create_suite2p_masks_extract_traces(str(data_path), mask_filename)
-    logger.info("Created Suite2p traces for subsegmented masks")
-
-    suite2p_folder = data_path / "cellpose_suite2p_output"
     mapping = create_suite2p_cellpose_roi_mapping(
         subsegmented_mask, str(suite2p_folder)
     )
@@ -277,12 +420,9 @@ def export_correspondence_products(
         if cp_label is not None
     }
 
-    traces_path = suite2p_folder / "F.npy"
-    if not traces_path.exists():
-        raise FileNotFoundError("Suite2p trace file F.npy not found after extraction.")
-
-    traces = np.load(traces_path, allow_pickle=True)
-    mapped_traces_matrix = map_trace(traces, mapping)
+    mapped_trace_matrices: dict[int, np.ndarray] = {}
+    for channel, traces in extracted_traces.items():
+        mapped_trace_matrices[channel] = map_trace(traces, mapping)
 
     suite2p_column = np.array(
         [reversed_mapping.get(label, -1) for label in sub_segmented_data[:, 1]],
@@ -297,33 +437,47 @@ def export_correspondence_products(
         "correspondence_matrix": correspondence_matrix,
         "sub_segmented_data": sub_segmented_data,
         "mapped_subsegmented_data": mapped_subsegmented_data,
-        "mapped_traces_matrix": mapped_traces_matrix,
+        "mapped_traces_matrices": mapped_trace_matrices,
     }
 
-    trace_npy = data_path / "trace_matrix.npy"
     corr_npy = data_path / "correspondence_matrix.npy"
-    np.save(trace_npy, mapped_traces_matrix)
     np.save(corr_npy, mapped_subsegmented_data)
-    logger.info(
-        "Saved trace matrix to %s and correspondence matrix to %s (NumPy format)",
-        trace_npy,
-        corr_npy,
-    )
+    logger.info("Saved correspondence matrix to %s (NumPy format)", corr_npy)
 
-    trace_mat = data_path / "trace_matrix.mat"
     corr_mat = data_path / "correspondence_matrix.mat"
-    _save_as_mat(mapped_traces_matrix, trace_mat)
     _save_as_mat(mapped_subsegmented_data, corr_mat)
-    logger.info(
-        "Saved trace matrix to %s and correspondence matrix to %s (MAT format)",
-        trace_mat,
-        corr_mat,
-    )
+    logger.info("Saved correspondence matrix to %s (MAT format)", corr_mat)
+
+    trace_paths: dict[int, Path] = {}
+    trace_mat_paths: dict[int, Path] = {}
+    for channel, mapped_traces_matrix in mapped_trace_matrices.items():
+        trace_npy = data_path / f"trace_matrix_ch{channel}.npy"
+        trace_mat = data_path / f"trace_matrix_ch{channel}.mat"
+        np.save(trace_npy, mapped_traces_matrix)
+        _save_as_mat(mapped_traces_matrix, trace_mat)
+        trace_paths[channel] = trace_npy
+        trace_mat_paths[channel] = trace_mat
+        logger.info(
+            "Saved channel %d trace matrix to %s and %s",
+            channel,
+            trace_npy,
+            trace_mat,
+        )
+
+    first_channel = sorted(mapped_trace_matrices)[0]
+    outputs["mapped_traces_matrix"] = mapped_trace_matrices[first_channel]
+    if list(sorted(mapped_trace_matrices)) == [0]:
+        legacy_trace_npy = data_path / "trace_matrix.npy"
+        legacy_trace_mat = data_path / "trace_matrix.mat"
+        np.save(legacy_trace_npy, mapped_trace_matrices[0])
+        _save_as_mat(mapped_trace_matrices[0], legacy_trace_mat)
 
     outputs.update(
         {
-            "trace_matrix_path": trace_npy,
-            "trace_matrix_mat_path": trace_mat,
+            "trace_matrix_paths": trace_paths,
+            "trace_matrix_mat_paths": trace_mat_paths,
+            "trace_matrix_path": trace_paths[first_channel],
+            "trace_matrix_mat_path": trace_mat_paths[first_channel],
             "correspondence_matrix_path": corr_npy,
             "correspondence_matrix_mat_path": corr_mat,
         }

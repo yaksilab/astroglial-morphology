@@ -5,7 +5,7 @@ import numpy as np
 from pathlib import Path
 from unittest.mock import Mock, patch, mock_open
 
-from astroglial_morphology.binary_utils import BinaryDataProcessor
+from astroglial_morphology.binary_utils import BinaryDataProcessor, create_projections
 
 
 def _close_processor(processor: BinaryDataProcessor) -> None:
@@ -65,6 +65,41 @@ class TestBinaryDataProcessor:
         assert processor.ops["Lx"] == ops["Lx"]
         assert processor.ops["nframes"] == ops["nframes"]
         _close_processor(processor)
+
+    def test_create_two_channel_projections(self, temp_dir):
+        """Test projection creation for Suite2p two-channel binary outputs."""
+        suite2p_root = temp_dir / "suite2p"
+        plane_path = suite2p_root / "plane0"
+        plane_path.mkdir(parents=True, exist_ok=True)
+
+        ly, lx = 8, 10
+        nframes = 4
+        ch0 = np.ones((nframes, ly, lx), dtype=np.int16)
+        ch1 = np.full((nframes, ly, lx), 2, dtype=np.int16)
+        (plane_path / "data.bin").write_bytes(ch0.tobytes())
+        (plane_path / "data_chan2.bin").write_bytes(ch1.tobytes())
+
+        ops = {
+            "Ly": ly,
+            "Lx": lx,
+            "nframes": nframes,
+            "nchannels": 2,
+            "fs": 1.0,
+        }
+        np.save(plane_path / "ops.npy", ops, allow_pickle=True)
+
+        projections = create_projections(
+            str(suite2p_root), save_images=False, batch_size=2
+        )
+
+        assert projections["mean_ch0"].shape == (ly, lx)
+        assert projections["mean_ch1"].shape == (ly, lx)
+        assert projections["max_projection_ch0"].shape == (ly, lx)
+        assert projections["max_projection_ch1"].shape == (ly, lx)
+        np.testing.assert_array_equal(projections["mean"], projections["mean_ch0"])
+        np.testing.assert_array_equal(
+            projections["max_projection"], projections["max_projection_ch0"]
+        )
     
     def test_initialization_missing_ops(self, temp_dir):
         """Test initialization fails when ops.npy is missing."""

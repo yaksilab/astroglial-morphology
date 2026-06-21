@@ -1,9 +1,10 @@
 """Main pipeline orchestration for astroglial morphology analysis."""
 
 import logging
+import json
 import os
 from pathlib import Path
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, Sequence, Union
 import numpy as np
 
 from .config import PipelineConfig
@@ -72,6 +73,73 @@ class Pipeline:
         self.classification = None
         self.neck_distance: Optional[int] = None
         self.segmentation_base_path: Optional[str] = None
+        self.registration_channel = 0
+        self.segmentation_channel = "both"
+        self.trace_channels: Optional[list[int]] = None
+        self.segmentation_projection = "mean"
+        self.do_regmetrics = False
+
+    @staticmethod
+    def _normalize_trace_channels(
+        trace_channels: Optional[Union[str, Sequence[int]]],
+    ) -> Optional[list[int]]:
+        if trace_channels is None:
+            return None
+        if isinstance(trace_channels, str):
+            if not trace_channels.strip():
+                return None
+            channels = [int(part.strip()) for part in trace_channels.split(",")]
+        else:
+            channels = [int(channel) for channel in trace_channels]
+
+        if not channels:
+            return None
+        if len(set(channels)) != len(channels):
+            raise ValueError("Duplicate trace channels are not allowed")
+        return channels
+
+    @staticmethod
+    def _normalize_image(image: np.ndarray) -> np.ndarray:
+        image = image.astype(np.float32, copy=False)
+        low, high = np.percentile(image, [1.0, 99.0])
+        if high <= low:
+            return np.zeros_like(image, dtype=np.float32)
+        return np.clip((image - low) / (high - low), 0.0, 1.0).astype(np.float32)
+
+    def _available_channel_count(self) -> int:
+        if self.suite2p_options is not None:
+            return int(self.suite2p_options.get("nchannels", 1))
+        if self.metadata is not None:
+            return int(self.metadata.nchannels)
+        return 1
+
+    def _validate_channel_index(self, channel: int, label: str) -> None:
+        if channel < 0 or channel >= self._available_channel_count():
+            raise ValueError(
+                f"{label} channel {channel} is out of range for "
+                f"{self._available_channel_count()} channel(s)"
+            )
+
+    def _validate_run_channels(self, export_correspondence: bool) -> None:
+        self._validate_channel_index(self.registration_channel, "Registration")
+
+        if self.segmentation_channel not in {"both", "0", "1"}:
+            raise ValueError(
+                "segmentation_channel must be one of: both, 0, 1"
+            )
+        if self.segmentation_channel in {"0", "1"}:
+            self._validate_channel_index(int(self.segmentation_channel), "Segmentation")
+
+        if export_correspondence:
+            if self._available_channel_count() > 1 and self.trace_channels is None:
+                raise ValueError(
+                    "trace_channels must be specified when exporting traces "
+                    "from multi-channel data"
+                )
+            if self.trace_channels is None:
+                self.trace_channels = [0]
+            for channel in self.trace_channels:
+                self._validate_channel_index(channel, "Trace")
 
     def detect_input(self) -> None:
         """Detect input file in the data directory."""
@@ -102,17 +170,32 @@ class Pipeline:
             # Check if LIF has already been converted to binary
             suite2p_path = Path(self.data_path) / "suite2p" / "plane0"
             data_bin_path = suite2p_path / "data.bin"
+            data_chan2_bin_path = suite2p_path / "data_chan2.bin"
             ops_npy_path = suite2p_path / "ops.npy"
 
             if data_bin_path.exists() and ops_npy_path.exists():
-                logger.info("LIF file already converted to Suite2p binary format")
-                # Load existing ops to get Lys and Lxs
                 try:
                     existing_ops = np.load(ops_npy_path, allow_pickle=True).item()
-                    ops_from_lif = {
-                        "Lys": existing_ops.get("Lys", [existing_ops["Ly"]]),
-                        "Lxs": existing_ops.get("Lxs", [existing_ops["Lx"]]),
-                    }
+                    expected_channels = min(int(self.metadata.nchannels), 2)
+                    existing_channels = int(existing_ops.get("nchannels", 1))
+                    needs_chan2 = expected_channels > 1
+                    if needs_chan2 and (
+                        existing_channels < 2 or not data_chan2_bin_path.exists()
+                    ):
+                        logger.info(
+                            "Existing LIF binary is single-channel; re-converting "
+                            "source LIF with two-channel support"
+                        )
+                        ops_from_lif = lif_to_suite2p_binary(
+                            lif_path=self.file_info.path_str,
+                            output_dir=self.data_path,
+                            series_index=self.config.LIF_SERIES_INDEX,
+                            channel_index=None,
+                            plane_index=self.config.LIF_PLANE_INDEX,
+                        )
+                    else:
+                        logger.info("LIF file already converted to Suite2p binary format")
+                        ops_from_lif = existing_ops
                 except Exception as e:
                     logger.warning(f"Failed to load existing ops.npy: {e}")
                     logger.info("Re-converting LIF file...")
@@ -120,7 +203,7 @@ class Pipeline:
                         lif_path=self.file_info.path_str,
                         output_dir=self.data_path,
                         series_index=self.config.LIF_SERIES_INDEX,
-                        channel_index=self.config.LIF_CHANNEL_INDEX,
+                        channel_index=None,
                         plane_index=self.config.LIF_PLANE_INDEX,
                     )
             else:
@@ -129,26 +212,60 @@ class Pipeline:
                     lif_path=self.file_info.path_str,
                     output_dir=self.data_path,
                     series_index=self.config.LIF_SERIES_INDEX,
-                    channel_index=self.config.LIF_CHANNEL_INDEX,
+                    channel_index=None,
                     plane_index=self.config.LIF_PLANE_INDEX,
                 )
                 logger.info("LIF conversion completed")
+
+            converted_channels = int(ops_from_lif.get("nchannels", 1))
+            if self.registration_channel >= converted_channels:
+                raise ValueError(
+                    f"Registration channel {self.registration_channel} is out of "
+                    f"range for converted LIF data with {converted_channels} channel(s)"
+                )
+            batch_params = self.config.calculate_batch_params(
+                int(ops_from_lif["nframes"])
+            )
+            suite2p_overrides = {
+                "input_format": "binary",
+                "look_one_level_down": None,
+                "Lys": ops_from_lif.get("Lys", [ops_from_lif["Ly"]]),
+                "Lxs": ops_from_lif.get("Lxs", [ops_from_lif["Lx"]]),
+                "nchannels": converted_channels,
+                "nframes": int(ops_from_lif["nframes"]),
+                "reg_file": ops_from_lif.get("reg_file", str(data_bin_path)),
+                "functional_chan": 1,
+                "align_by_chan": self.registration_channel + 1,
+                "do_regmetrics": self.do_regmetrics,
+                "reg_tif_chan2": self.reg_tif and converted_channels > 1,
+                **batch_params,
+            }
+            if converted_channels > 1:
+                reg_file_chan2 = ops_from_lif.get(
+                    "reg_file_chan2", str(data_chan2_bin_path)
+                )
+                if not Path(reg_file_chan2).exists():
+                    raise FileNotFoundError(
+                        "Two-channel LIF conversion is missing reg_file_chan2"
+                    )
+                suite2p_overrides["reg_file_chan2"] = reg_file_chan2
 
             # Build Suite2p options for binary input
             self.suite2p_options = self.config.build_suite2p_options(
                 metadata=self.metadata,
                 reg_tif=self.reg_tif,
-                input_format="binary",
-                look_one_level_down=None,
-                Lys=ops_from_lif["Lys"],
-                Lxs=ops_from_lif["Lxs"],
+                **suite2p_overrides,
             )
             logger.info("Using binary input format for LIF-converted data")
         else:
+            self._validate_channel_index(self.registration_channel, "Registration")
             # TIFF files - no conversion needed
             self.suite2p_options = self.config.build_suite2p_options(
                 metadata=self.metadata,
                 reg_tif=self.reg_tif,
+                align_by_chan=self.registration_channel + 1,
+                do_regmetrics=self.do_regmetrics,
+                reg_tif_chan2=self.reg_tif and self.metadata.nchannels > 1,
             )
 
     def run_registration(self, force: bool = False) -> bool:
@@ -191,10 +308,43 @@ class Pipeline:
         logger.info("Projections created")
         return self.projections
 
+    def _projection_key(self, projection_type: str, channel: int) -> str:
+        channel_key = f"{projection_type}_ch{channel}"
+        if self.projections is not None and channel_key in self.projections:
+            return channel_key
+        if channel == 0 and self.projections is not None and projection_type in self.projections:
+            return projection_type
+        raise ValueError(
+            f"Projection '{projection_type}' for channel {channel} is not available. "
+            f"Available projections: {', '.join(sorted(self.projections or {}))}"
+        )
+
+    def _build_segmentation_image(
+        self, projection_type: str, segmentation_channel: str
+    ) -> tuple[np.ndarray, str, dict[str, Any]]:
+        if self.projections is None:
+            raise RuntimeError("Must create projections before segmentation")
+
+        available_channels = self._available_channel_count()
+        if segmentation_channel == "both" and available_channels > 1:
+            images = [
+                self._normalize_image(
+                    self.projections[self._projection_key(projection_type, channel)]
+                )
+                for channel in range(min(available_channels, 2))
+            ]
+            return np.stack(images, axis=-1), "both", {"channel_axis": -1}
+
+        channel = 0 if segmentation_channel == "both" else int(segmentation_channel)
+        self._validate_channel_index(channel, "Segmentation")
+        image = self.projections[self._projection_key(projection_type, channel)]
+        return image, f"ch{channel}", {}
+
     def segment_cells(
         self,
         interactive_correction: bool = False,
         projection_type: str = "mean",
+        segmentation_channel: str = "both",
     ) -> np.ndarray:
         """Segment cells using Cellpose.
 
@@ -202,6 +352,7 @@ class Pipeline:
             interactive_correction: If True, prompts user to manually correct masks
                                    in Cellpose before continuing
             projection_type: Projection image to segment on ("mean" or "max_projection")
+            segmentation_channel: "both", "0", or "1"
         """
         if self.projections is None:
             raise RuntimeError("Must create projections before segmentation")
@@ -209,21 +360,26 @@ class Pipeline:
         if self.metadata is None:
             raise RuntimeError("Metadata is required for segmentation")
 
-        if projection_type not in self.projections:
-            raise ValueError(
-                f"Projection '{projection_type}' not available. "
-                f"Available projections: {', '.join(sorted(self.projections.keys()))}"
-            )
+        segmentation_image, channel_suffix, segmentation_kwargs = (
+            self._build_segmentation_image(projection_type, segmentation_channel)
+        )
 
-        logger.info("Segmenting cells on %s projection...", projection_type)
+        logger.info(
+            "Segmenting cells on %s projection using channel mode %s...",
+            projection_type,
+            segmentation_channel,
+        )
 
-        save_name = f"{projection_type}_image"
+        save_name = f"{projection_type}_{channel_suffix}_image"
         save_path = os.path.join(self.data_path, "suite2p", "plane0", save_name)
         self.segmentation_base_path = save_path
         diameter = self.config.calculate_diameter(self.metadata.pix_resolution)
 
         self.masks = self.segmenter.segment_img(
-            self.projections[projection_type], save_path, diameter=diameter
+            segmentation_image,
+            save_path,
+            diameter=diameter,
+            **segmentation_kwargs,
         )
 
         labels = np.unique(self.masks)
@@ -323,6 +479,7 @@ class Pipeline:
         delta_x: float = 20.0,
         subsegmentation_mode: str = SUBSEGMENTATION_MODE_EQUAL_LENGTH,
         mask_filename: str = "subsegmented_masks_seg.npy",
+        trace_channels: Optional[Sequence[int]] = None,
     ) -> Optional[Dict[str, Any]]:
         """Create correspondence matrix, subsegment masks, and extract traces."""
 
@@ -374,6 +531,7 @@ class Pipeline:
             subsegmentation_mode=subsegmentation_mode,
             neck_distance=neck_distance,
             mask_filename=mask_filename,
+            trace_channels=trace_channels,
         )
         if outputs is None:
             logger.info("Correspondence export skipped")
@@ -381,6 +539,29 @@ class Pipeline:
 
         logger.info("Correspondence export completed")
         return outputs
+
+    def write_pipeline_metadata(self) -> None:
+        if self.suite2p_options is None:
+            return
+
+        metadata_path = (
+            Path(self.data_path) / "suite2p" / "plane0" / "pipeline_metadata.json"
+        )
+        metadata_path.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "source_nchannels": self.metadata.nchannels if self.metadata else None,
+            "nchannels": self._available_channel_count(),
+            "registration_channel": self.registration_channel,
+            "suite2p_align_by_chan": self.suite2p_options.get("align_by_chan"),
+            "segmentation_channel": self.segmentation_channel,
+            "segmentation_projection": self.segmentation_projection,
+            "trace_channels": self.trace_channels,
+            "do_regmetrics": self.do_regmetrics,
+            "reg_file": self.suite2p_options.get("reg_file"),
+            "reg_file_chan2": self.suite2p_options.get("reg_file_chan2"),
+        }
+        metadata_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        logger.info("Saved pipeline metadata to %s", metadata_path)
 
     def run(
         self,
@@ -392,6 +573,11 @@ class Pipeline:
         correspondence_delta_x: float = 20.0,
         correspondence_subsegmentation_mode: str = SUBSEGMENTATION_MODE_EQUAL_LENGTH,
         segmentation_projection: str = "mean",
+        segmentation_channel: str = "both",
+        registration_channel: int = 0,
+        trace_channels: Optional[Union[str, Sequence[int]]] = None,
+        do_regmetrics: bool = False,
+        alignment_only: bool = False,
     ) -> Dict[str, Any]:
         """
         Run the complete pipeline.
@@ -404,20 +590,33 @@ class Pipeline:
             correspondence_segment_length: Segment length in pixels for subsegmentation
             correspondence_delta_x: X-axis grouping distance for correspondence alignment
             correspondence_subsegmentation_mode: Strategy for subsegmenting cells
+            segmentation_channel: Channel mode for Cellpose input ("both", "0", or "1")
+            registration_channel: Zero-based channel used to calculate registration shifts
+            trace_channels: Zero-based channels to export traces for
+            do_regmetrics: Whether Suite2p should compute optional registration metrics
+            alignment_only: Stop after registration and projection creation
 
         Returns:
             Dictionary with pipeline results
         """
         logger.info("Starting astroglial morphology pipeline")
+        self.registration_channel = int(registration_channel)
+        self.segmentation_channel = str(segmentation_channel)
+        self.trace_channels = self._normalize_trace_channels(trace_channels)
+        self.segmentation_projection = segmentation_projection
+        self.do_regmetrics = do_regmetrics
+        should_export_correspondence = export_correspondence and not alignment_only
 
         # Step 1: Detect input
         self.detect_input()
 
         # Step 2: Load metadata
         self.load_metadata()
+        self._validate_run_channels(should_export_correspondence)
 
         # Step 3: Prepare data (always needed for suite2p_options)
         self.prepare_data()
+        self._validate_run_channels(should_export_correspondence)
 
         # Step 4: Run registration (auto-detected or forced)
         if skip_registration:
@@ -427,22 +626,36 @@ class Pipeline:
 
         # Step 5: Create projections
         self.create_projections()
+        self.write_pipeline_metadata()
+
+        if alignment_only:
+            logger.info("Alignment-only mode requested; stopping before segmentation")
+            return {
+                "file_info": self.file_info,
+                "metadata": self.metadata,
+                "projections": self.projections,
+                "masks": None,
+                "classification": None,
+                "correspondence": None,
+            }
 
         # Step 6: Segment cells (with optional interactive correction)
         self.segment_cells(
             interactive_correction=manual_correction,
             projection_type=segmentation_projection,
+            segmentation_channel=self.segmentation_channel,
         )
 
         # Step 7: Classify cells
         self.classify_cells()
 
         correspondence_outputs = None
-        if export_correspondence:
+        if should_export_correspondence:
             correspondence_outputs = self.export_correspondence_data(
                 segment_length=correspondence_segment_length,
                 delta_x=correspondence_delta_x,
                 subsegmentation_mode=correspondence_subsegmentation_mode,
+                trace_channels=self.trace_channels,
             )
 
         logger.info("Pipeline completed successfully")

@@ -181,6 +181,47 @@ class TestLifToSuite2pBinary:
             assert (tmp_path / "suite2p" / "plane0").exists()
             assert (tmp_path / "suite2p" / "plane0" / "data.bin").exists()
             assert (tmp_path / "suite2p" / "plane0" / "ops.npy").exists()
+
+    @patch('astroglial_morphology.utils.lif_utils.extract_lif_metadata')
+    @patch('astroglial_morphology.utils.lif_utils.LifFile')
+    def test_conversion_writes_two_channel_binaries(
+        self, mock_lif_class, mock_extract_metadata, tmp_path
+    ):
+        """Test that two-channel LIF conversion writes Suite2p channel binaries."""
+        mock_extract_metadata.return_value = Metadata(
+            nframes=4,
+            nchannels=2,
+            nplanes=1,
+            finterval=1.0,
+            pix_resolution=8.36
+        )
+
+        mock_dims = Mock()
+        mock_dims.x = 8
+        mock_dims.y = 6
+        mock_dims.t = 4
+
+        mock_img = Mock()
+        mock_img.dims = mock_dims
+        mock_img.get_frame = Mock(return_value=Mock())
+
+        mock_lif = Mock()
+        mock_lif.get_image = Mock(return_value=mock_img)
+        mock_lif_class.return_value = mock_lif
+
+        with patch('numpy.array', return_value=np.zeros((6, 8), dtype=np.uint8)):
+            ops = lif_to_suite2p_binary(str(tmp_path / "test.lif"), str(tmp_path))
+
+        plane0 = tmp_path / "suite2p" / "plane0"
+        assert (plane0 / "data.bin").exists()
+        assert (plane0 / "data_chan2.bin").exists()
+        assert ops["nchannels"] == 2
+        assert ops["channel_indices"] == [0, 1]
+        assert ops["reg_file"] == str(plane0 / "data.bin")
+        assert ops["reg_file_chan2"] == str(plane0 / "data_chan2.bin")
+        assert ops["functional_chan"] == 1
+        assert ops["align_by_chan"] == 1
+        assert mock_img.get_frame.call_count == 8
     
     @patch('astroglial_morphology.utils.lif_utils.extract_lif_metadata')
     def test_conversion_invalid_channel_index(self, mock_extract_metadata, tmp_path):
