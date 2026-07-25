@@ -395,11 +395,18 @@ def create_projections(
     nchannels = int(first_processor.ops.get("nchannels", 1)) if first_processor.ops else 1
 
     processors = [first_processor]
-    if nchannels > 1:
-        processors.append(load_binary_data(suite2p_folder_path, plane_idx, channel_idx=1))
-
     projections: Dict[str, np.ndarray] = {}
     try:
+        if nchannels < 1 or nchannels > 2:
+            raise ValueError(
+                "Projection creation supports only one or two channels; "
+                f"ops.npy declares {nchannels}"
+            )
+        if nchannels > 1:
+            processors.append(
+                load_binary_data(suite2p_folder_path, plane_idx, channel_idx=1)
+            )
+
         for channel_idx, processor in enumerate(processors):
             mean = processor.get_mean_image(batch_size=batch_size)
             max_projection = processor.get_max_projection(batch_size=batch_size)

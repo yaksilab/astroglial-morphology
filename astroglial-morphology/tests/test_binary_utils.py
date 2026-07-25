@@ -100,6 +100,29 @@ class TestBinaryDataProcessor:
         np.testing.assert_array_equal(
             projections["max_projection"], projections["max_projection_ch0"]
         )
+
+    def test_create_projections_rejects_more_than_two_channels(self, temp_dir):
+        """Test unsupported channel counts fail instead of silently dropping data."""
+        suite2p_root = temp_dir / "suite2p"
+        plane_path = suite2p_root / "plane0"
+        plane_path.mkdir(parents=True, exist_ok=True)
+
+        ly, lx, nframes = 4, 5, 2
+        data = np.ones((nframes, ly, lx), dtype=np.int16)
+        (plane_path / "data.bin").write_bytes(data.tobytes())
+        np.save(
+            plane_path / "ops.npy",
+            {
+                "Ly": ly,
+                "Lx": lx,
+                "nframes": nframes,
+                "nchannels": 3,
+            },
+            allow_pickle=True,
+        )
+
+        with pytest.raises(ValueError, match="only one or two channels"):
+            create_projections(str(suite2p_root), save_images=False)
     
     def test_initialization_missing_ops(self, temp_dir):
         """Test initialization fails when ops.npy is missing."""

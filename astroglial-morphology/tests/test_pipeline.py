@@ -339,7 +339,7 @@ class TestPipelineMetadata:
         pipeline = Pipeline(data_path=str(temp_dir), use_gpu=True, reg_tif=True)
         pipeline.file_info = InputFileInfo(path=lif_file, format=InputFormat.LIF)
         pipeline.metadata = Metadata(
-            nframes=5,
+            nframes=10,
             nchannels=2,
             nplanes=1,
             finterval=2.0,
@@ -389,7 +389,7 @@ class TestPipelineMetadata:
         assert payload["series_index"] == 0
         assert payload["series_name"] == "Series001"
         assert payload["plane_index"] == 0
-        assert payload["source_nframes"] == 5
+        assert payload["source_nframes"] == 10
         assert payload["nframes_registered"] == 5
         assert payload["source_nchannels"] == 2
         assert payload["converted_nchannels"] == 2
@@ -400,7 +400,7 @@ class TestPipelineMetadata:
         assert payload["pixel_resolution"] == 1.76
         assert payload["frame_interval_seconds"] == 2.0
         assert payload["fs"] == 0.5
-        assert payload["frames_per_channel_per_plane"] == 2
+        assert payload["frames_per_channel_per_plane"] == 5
         assert payload["registration_complete"] is True
         assert payload["registration_completed_at"] is not None
         assert payload["suite2p_output_dir"] == str(suite2p_dir)
@@ -436,6 +436,170 @@ class TestPipelineMetadata:
         assert payload["platform"]
         assert payload["created_at"]
         assert payload["hostname"]
+
+
+class TestPipelineRegistrationReuse:
+    """Tests for safe reuse and rebuilding of Suite2p registration inputs."""
+
+    @patch('astroglial_morphology.pipeline.lif_to_suite2p_binary')
+    @patch('astroglial_morphology.pipeline.Segmentation')
+    def test_lif_reconversion_invalidates_registration_completion(
+        self, mock_seg_class, mock_lif_convert, temp_dir
+    ):
+        lif_file = temp_dir / "test.lif"
+        lif_file.touch()
+        suite2p_dir = temp_dir / "suite2p"
+        plane_path = suite2p_dir / "plane0"
+        plane_path.mkdir(parents=True)
+        data_bin = plane_path / "data.bin"
+        data_chan2_bin = plane_path / "data_chan2.bin"
+        data_bin.write_bytes(b"old-registered-data")
+        np.save(
+            plane_path / "ops.npy",
+            {"Ly": 6, "Lx": 8, "nframes": 4, "nchannels": 1},
+            allow_pickle=True,
+        )
+        complete_flag = suite2p_dir / ".registration_complete"
+        complete_flag.touch()
+
+        def convert_two_channels(**kwargs):
+            data_bin.write_bytes(b"raw-channel-0")
+            data_chan2_bin.write_bytes(b"raw-channel-1")
+            return {
+                "Ly": 6,
+                "Lx": 8,
+                "Lys": [6],
+                "Lxs": [8],
+                "nframes": 4,
+                "nchannels": 2,
+                "reg_file": str(data_bin),
+                "reg_file_chan2": str(data_chan2_bin),
+            }
+
+        mock_lif_convert.side_effect = convert_two_channels
+        pipeline = Pipeline(data_path=str(temp_dir))
+        pipeline.file_info = InputFileInfo(path=lif_file, format=InputFormat.LIF)
+        pipeline.metadata = Metadata(
+            nframes=8,
+            nchannels=2,
+            nplanes=1,
+            finterval=1.0,
+            pix_resolution=8.36,
+        )
+
+        pipeline.prepare_data()
+
+        mock_lif_convert.assert_called_once()
+        assert not complete_flag.exists()
+
+    @patch('astroglial_morphology.pipeline.do_registration')
+    @patch('astroglial_morphology.pipeline.Segmentation')
+    def test_changed_registration_channel_rebuilds_tiff_inputs(
+        self, mock_seg_class, mock_do_registration, temp_dir
+    ):
+        tiff_file = temp_dir / "test.tif"
+        tiff_file.touch()
+        suite2p_dir = temp_dir / "suite2p"
+        plane_path = suite2p_dir / "plane0"
+        plane_path.mkdir(parents=True)
+        data_bin = plane_path / "data.bin"
+        data_chan2_bin = plane_path / "data_chan2.bin"
+        data_bin.write_bytes(b"registered-channel-0")
+        data_chan2_bin.write_bytes(b"registered-channel-1")
+        np.save(
+            plane_path / "ops.npy",
+            {
+                "align_by_chan": 1,
+                "functional_chan": 1,
+                "nchannels": 2,
+            },
+            allow_pickle=True,
+        )
+        complete_flag = suite2p_dir / ".registration_complete"
+        complete_flag.touch()
+
+        pipeline = Pipeline(data_path=str(temp_dir))
+        pipeline.file_info = InputFileInfo(path=tiff_file, format=InputFormat.TIFF)
+        pipeline.metadata = Metadata(
+            nframes=200,
+            nchannels=2,
+            nplanes=1,
+            finterval=1.0,
+            pix_resolution=8.36,
+        )
+        pipeline.registration_channel = 1
+        pipeline.prepare_data()
+
+        performed = pipeline.run_registration()
+
+        assert performed is True
+        mock_do_registration.assert_called_once()
+        assert mock_do_registration.call_args.args[1]["align_by_chan"] == 2
+        assert not complete_flag.exists()
+        assert not data_bin.exists()
+        assert not data_chan2_bin.exists()
+        assert not (plane_path / "ops.npy").exists()
+
+    @patch('astroglial_morphology.pipeline.do_registration')
+    @patch('astroglial_morphology.pipeline.Segmentation')
+    def test_matching_registration_channel_reuses_completed_inputs(
+        self, mock_seg_class, mock_do_registration, temp_dir
+    ):
+        tiff_file = temp_dir / "test.tif"
+        tiff_file.touch()
+        suite2p_dir = temp_dir / "suite2p"
+        plane_path = suite2p_dir / "plane0"
+        plane_path.mkdir(parents=True)
+        data_bin = plane_path / "data.bin"
+        data_bin.write_bytes(b"registered-channel-0")
+        np.save(
+            plane_path / "ops.npy",
+            {
+                "align_by_chan": 1,
+                "functional_chan": 1,
+                "nchannels": 1,
+            },
+            allow_pickle=True,
+        )
+        (suite2p_dir / ".registration_complete").touch()
+
+        pipeline = Pipeline(data_path=str(temp_dir))
+        pipeline.file_info = InputFileInfo(path=tiff_file, format=InputFormat.TIFF)
+        pipeline.metadata = Metadata(
+            nframes=200,
+            nchannels=1,
+            nplanes=1,
+            finterval=1.0,
+            pix_resolution=8.36,
+        )
+        pipeline.prepare_data()
+
+        performed = pipeline.run_registration()
+
+        assert performed is False
+        mock_do_registration.assert_not_called()
+        assert data_bin.exists()
+
+
+class TestPipelineChannelValidation:
+    """Tests for the one/two-channel processing limit."""
+
+    @patch('astroglial_morphology.pipeline.Segmentation')
+    def test_three_channel_tiff_is_rejected(self, mock_seg_class, temp_dir):
+        tiff_file = temp_dir / "test.tif"
+        tiff_file.touch()
+        pipeline = Pipeline(data_path=str(temp_dir))
+        pipeline.file_info = InputFileInfo(path=tiff_file, format=InputFormat.TIFF)
+        pipeline.metadata = Metadata(
+            nframes=300,
+            nchannels=3,
+            nplanes=1,
+            finterval=1.0,
+            pix_resolution=8.36,
+        )
+
+        with pytest.raises(ValueError, match="supports at most two channels"):
+            pipeline.prepare_data()
 
 
 class TestPipelineRun:

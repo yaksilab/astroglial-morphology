@@ -68,9 +68,10 @@ def extract_lif_metadata(lif_path: str, series_index: int = 0) -> Metadata:
     # where 't' is time (frames), 'x' is width, 'y' is height, 'z' is z-slices
     dims = img.dims
 
-    nframes = dims.t  # Number of time frames
+    frames_per_channel_per_plane = dims.t
     nchannels = img.channels
     nplanes = dims.z  # Number of z-planes
+    nframes = frames_per_channel_per_plane * nchannels * nplanes
 
     # Extract pixel resolution (microns per pixel)
     # img.scale is a tuple of (x_scale, y_scale, z_scale, t_scale)

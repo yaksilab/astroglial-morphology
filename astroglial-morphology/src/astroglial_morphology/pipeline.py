@@ -39,6 +39,19 @@ class Pipeline:
     classified cell morphologies.
     """
 
+    _REGISTRATION_COMPATIBILITY_KEYS = (
+        "align_by_chan",
+        "functional_chan",
+        "nchannels",
+    )
+    _REGISTRATION_INPUT_FILENAMES = (
+        "ops.npy",
+        "data.bin",
+        "data_chan2.bin",
+        "data_raw.bin",
+        "data_chan2_raw.bin",
+    )
+
     def __init__(
         self,
         data_path: str,
@@ -129,7 +142,19 @@ class Pipeline:
                 f"{self._available_channel_count()} channel(s)"
             )
 
+    def _validate_supported_channel_count(self) -> None:
+        if (
+            self.file_info is not None
+            and self.file_info.format == InputFormat.TIFF
+            and self._available_channel_count() > 2
+        ):
+            raise ValueError(
+                "TIFF processing supports at most two channels; "
+                f"found {self._available_channel_count()}"
+            )
+
     def _validate_run_channels(self, export_correspondence: bool) -> None:
+        self._validate_supported_channel_count()
         self._validate_channel_index(self.registration_channel, "Registration")
 
         if self.segmentation_channel not in {"both", "0", "1"}:
@@ -149,6 +174,85 @@ class Pipeline:
                 self.trace_channels = [0]
             for channel in self.trace_channels:
                 self._validate_channel_index(channel, "Trace")
+
+    def _suite2p_output_dir(self) -> Path:
+        return get_suite2p_output_dir(self.data_path, self.suite2p_options)
+
+    def _invalidate_registration_completion(self, reason: str) -> None:
+        flag_path = self._suite2p_output_dir() / ".registration_complete"
+        if flag_path.exists():
+            flag_path.unlink()
+            logger.info(
+                "Invalidated completed registration because %s: %s",
+                reason,
+                flag_path,
+            )
+
+    def _convert_lif_to_binary(self) -> Dict[str, Any]:
+        if self.file_info is None or self.file_info.format != InputFormat.LIF:
+            raise RuntimeError("LIF input is required for binary conversion")
+
+        self._invalidate_registration_completion("the LIF binaries are being rebuilt")
+        return lif_to_suite2p_binary(
+            lif_path=self.file_info.path_str,
+            output_dir=self.data_path,
+            series_index=self.config.LIF_SERIES_INDEX,
+            channel_index=None,
+            plane_index=self.config.LIF_PLANE_INDEX,
+        )
+
+    def _registration_configuration_matches(self) -> bool:
+        if self.suite2p_options is None:
+            return False
+
+        ops_path = self._suite2p_output_dir() / "plane0" / "ops.npy"
+        existing_ops = self._load_suite2p_ops(ops_path)
+        if not existing_ops:
+            logger.info(
+                "Completed registration has no readable ops metadata; rebuilding inputs"
+            )
+            return False
+
+        mismatches = {
+            key: {
+                "completed": self._json_safe(existing_ops.get(key)),
+                "requested": self._json_safe(self.suite2p_options.get(key)),
+            }
+            for key in self._REGISTRATION_COMPATIBILITY_KEYS
+            if existing_ops.get(key) != self.suite2p_options.get(key)
+        }
+        if mismatches:
+            logger.info(
+                "Registration configuration changed; rebuilding inputs: %s",
+                mismatches,
+            )
+            return False
+        return True
+
+    def _remove_registration_inputs(self) -> None:
+        suite2p_dir = self._suite2p_output_dir()
+        self._invalidate_registration_completion("registration is being rebuilt")
+
+        for plane_path in suite2p_dir.glob("plane*"):
+            if not plane_path.is_dir():
+                continue
+            for filename in self._REGISTRATION_INPUT_FILENAMES:
+                input_path = plane_path / filename
+                if input_path.exists():
+                    input_path.unlink()
+                    logger.debug("Removed stale registration input: %s", input_path)
+
+    def _rebuild_registration_inputs(self) -> None:
+        if self.file_info is None:
+            raise RuntimeError("Input must be detected before rebuilding registration")
+
+        self._remove_registration_inputs()
+        if self.file_info.format == InputFormat.LIF:
+            self._convert_lif_to_binary()
+        else:
+            logger.info(
+                "Removed Suite2p binaries so they will be recreated from the source TIFF"
+            )
 
     def detect_input(self) -> None:
         """Detect input file in the data directory."""
@@ -195,35 +299,17 @@ class Pipeline:
                             "Existing LIF binary is single-channel; re-converting "
                             "source LIF with two-channel support"
                         )
-                        ops_from_lif = lif_to_suite2p_binary(
-                            lif_path=self.file_info.path_str,
-                            output_dir=self.data_path,
-                            series_index=self.config.LIF_SERIES_INDEX,
-                            channel_index=None,
-                            plane_index=self.config.LIF_PLANE_INDEX,
-                        )
+                        ops_from_lif = self._convert_lif_to_binary()
                     else:
                         logger.info("LIF file already converted to Suite2p binary format")
                         ops_from_lif = existing_ops
                 except Exception as e:
                     logger.warning(f"Failed to load existing ops.npy: {e}")
                     logger.info("Re-converting LIF file...")
-                    ops_from_lif = lif_to_suite2p_binary(
-                        lif_path=self.file_info.path_str,
-                        output_dir=self.data_path,
-                        series_index=self.config.LIF_SERIES_INDEX,
-                        channel_index=None,
-                        plane_index=self.config.LIF_PLANE_INDEX,
-                    )
+                    ops_from_lif = self._convert_lif_to_binary()
             else:
                 logger.info("Converting LIF to Suite2p binary format...")
-                ops_from_lif = lif_to_suite2p_binary(
-                    lif_path=self.file_info.path_str,
-                    output_dir=self.data_path,
-                    series_index=self.config.LIF_SERIES_INDEX,
-                    channel_index=None,
-                    plane_index=self.config.LIF_PLANE_INDEX,
-                )
+                ops_from_lif = self._convert_lif_to_binary()
                 logger.info("LIF conversion completed")
 
             converted_channels = int(ops_from_lif.get("nchannels", 1))
@@ -267,6 +353,7 @@ class Pipeline:
             )
             logger.info("Using binary input format for LIF-converted data")
         else:
+            self._validate_supported_channel_count()
             self._validate_channel_index(self.registration_channel, "Registration")
             # TIFF files - no conversion needed
             self.suite2p_options = self.config.build_suite2p_options(
@@ -289,10 +376,17 @@ class Pipeline:
         if self.suite2p_options is None:
             raise RuntimeError("Must call prepare_data() before run_registration()")
 
-        # Check if registration is already complete
-        if not force and check_registration_complete(self.data_path, self.suite2p_options):
-            logger.info("Registration already complete - skipping")
-            return False
+        registration_complete = check_registration_complete(
+            self.data_path, self.suite2p_options
+        )
+        if registration_complete and not force:
+            if self._registration_configuration_matches():
+                logger.info("Registration already complete - skipping")
+                return False
+            self._rebuild_registration_inputs()
+        elif force:
+            logger.info("Force registration requested; rebuilding inputs from source")
+            self._rebuild_registration_inputs()
 
         logger.info("Starting motion correction...")
         logger.debug(f"Suite2p options: {self.suite2p_options}")

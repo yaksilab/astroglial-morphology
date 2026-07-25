@@ -248,6 +248,12 @@ def _normalize_trace_channels(
     trace_channels: Optional[Sequence[int]],
     nchannels: int,
 ) -> list[int]:
+    if nchannels < 1 or nchannels > 2:
+        raise ValueError(
+            "Trace extraction supports only one or two channels; "
+            f"ops.npy declares {nchannels}"
+        )
+
     if trace_channels is None:
         if nchannels > 1:
             raise ValueError(
@@ -262,7 +268,7 @@ def _normalize_trace_channels(
     if len(set(channels)) != len(channels):
         raise ValueError("Duplicate trace channels are not allowed")
     for channel in channels:
-        if channel < 0 or channel >= nchannels:
+        if channel < 0 or channel > 1 or channel >= nchannels:
             raise ValueError(
                 f"Trace channel {channel} is out of range for {nchannels} channel(s)"
             )
@@ -354,12 +360,14 @@ def _extract_suite2p_traces_for_channels(
             traces = f_ch0
             neuropil = fneu_ch0
             legacy_prefix = ""
-        else:
+        elif channel == 1:
             if f_ch1 is None or fneu_ch1 is None:
                 raise RuntimeError("Suite2p did not return channel 1 traces")
             traces = f_ch1
             neuropil = fneu_ch1
             legacy_prefix = "_chan2"
+        else:  # pragma: no cover - guarded by _normalize_trace_channels
+            raise ValueError(f"Unsupported trace channel: {channel}")
 
         dff = traces.copy() - ops["neucoeff"] * neuropil
         dff = preprocess(

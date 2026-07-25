@@ -137,6 +137,8 @@ class TestExtractLifMetadata:
         metadata = extract_lif_metadata(str(lif_path))
         
         assert "Multiple channels detected" in caplog.text
+        assert metadata.nframes == 3000
+        assert metadata.frames_per_channel_per_plane == 1000
 
 
 class TestLifToSuite2pBinary:

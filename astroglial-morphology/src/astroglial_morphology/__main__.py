@@ -102,7 +102,7 @@ Examples:
         "--export-correspondence",
         action="store_true",
         help="Generate correspondence matrix, subsegmented masks, and trace exports",
-        default=True,
+        default=False,
     )
     parser.add_argument(
         "--segment-length",
@@ -137,7 +137,10 @@ Examples:
     parser.add_argument(
         "--trace-channels",
         default=None,
-        help="Comma-separated zero-based channels to export traces for, e.g. 0 or 0,1",
+        help=(
+            "Comma-separated zero-based channels to export traces for, e.g. 0 or 0,1 "
+            "(required for multi-channel correspondence export)"
+        ),
     )
 
     args = parser.parse_args()
