@@ -98,6 +98,8 @@ def extract_lif_metadata(lif_path: str, series_index: int = 0) -> Metadata:
         nplanes=nplanes,
         finterval=finterval,
         pix_resolution=pix_resolution,
+        series_name=img.name,
+        series_index=series_index,
     )
 
     logger.info(f"LIF metadata: {metadata}")

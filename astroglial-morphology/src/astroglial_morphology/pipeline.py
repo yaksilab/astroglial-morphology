@@ -3,6 +3,11 @@
 import logging
 import json
 import os
+import platform
+import socket
+import sys
+from datetime import datetime
+from importlib import metadata as importlib_metadata
 from pathlib import Path
 from typing import Optional, Dict, Any, Sequence, Union
 import numpy as np
@@ -12,6 +17,7 @@ from .io import detect_input_file, load_metadata, InputFormat
 from .registration import (
     do_registration,
     check_registration_complete,
+    get_suite2p_output_dir,
 )
 from .binary_utils import create_projections
 from .segmentation import Segmentation
@@ -78,6 +84,9 @@ class Pipeline:
         self.trace_channels: Optional[list[int]] = None
         self.segmentation_projection = "mean"
         self.do_regmetrics = False
+        self.manual_correction = False
+        self.export_correspondence = False
+        self.alignment_only = False
 
     @staticmethod
     def _normalize_trace_channels(
@@ -540,26 +549,273 @@ class Pipeline:
         logger.info("Correspondence export completed")
         return outputs
 
+    @staticmethod
+    def _timestamp_from_path(path: Path) -> Optional[str]:
+        if not path.exists():
+            return None
+        return datetime.fromtimestamp(path.stat().st_mtime).isoformat(timespec="seconds")
+
+    @staticmethod
+    def _package_version(package_name: str) -> Optional[str]:
+        try:
+            return importlib_metadata.version(package_name)
+        except importlib_metadata.PackageNotFoundError:
+            return None
+
+    @staticmethod
+    def _json_safe(value: Any) -> Any:
+        if isinstance(value, np.ndarray):
+            return value.tolist()
+        if isinstance(value, np.generic):
+            return value.item()
+        if isinstance(value, Path):
+            return str(value)
+        if isinstance(value, dict):
+            return {str(key): Pipeline._json_safe(item) for key, item in value.items()}
+        if isinstance(value, (list, tuple)):
+            return [Pipeline._json_safe(item) for item in value]
+        return value
+
+    @staticmethod
+    def _array_shape(value: Any) -> Optional[list[int]]:
+        if value is None:
+            return None
+        return [int(size) for size in np.asarray(value).shape]
+
+    @staticmethod
+    def _array_stats(values: Any) -> Dict[str, Optional[float]]:
+        if values is None:
+            return {
+                "min": None,
+                "max": None,
+                "mean": None,
+                "std": None,
+            }
+
+        array = np.asarray(values, dtype=float).ravel()
+        array = array[np.isfinite(array)]
+        if array.size == 0:
+            return {
+                "min": None,
+                "max": None,
+                "mean": None,
+                "std": None,
+            }
+
+        return {
+            "min": float(np.min(array)),
+            "max": float(np.max(array)),
+            "mean": float(np.mean(array)),
+            "std": float(np.std(array)),
+        }
+
+    def _load_suite2p_ops(self, ops_path: Path) -> Dict[str, Any]:
+        if not ops_path.exists():
+            return {}
+        try:
+            return np.load(ops_path, allow_pickle=True).item()
+        except Exception as exc:
+            logger.warning(
+                "Failed to load Suite2p ops metadata from %s: %s", ops_path, exc
+            )
+            return {}
+
+    def _lif_series_name(self, series_index: int) -> Optional[str]:
+        if self.file_info is None or self.file_info.format != InputFormat.LIF:
+            return None
+
+        try:
+            from readlif.reader import LifFile
+
+            lif = LifFile(self.file_info.path_str)
+            if series_index >= len(lif.image_list):
+                return None
+            series_name = lif.image_list[series_index].get("name")
+            return str(series_name) if series_name is not None else None
+        except Exception as exc:
+            logger.debug(
+                "Could not read LIF series name from %s: %s",
+                self.file_info.path_str,
+                exc,
+            )
+            return None
+
+    def _input_file_metadata_payload(self) -> Dict[str, Any]:
+        if self.file_info is None:
+            return {
+                "input_file": None,
+                "input_filename": None,
+                "input_file_extension": None,
+                "input_file_type": None,
+                "input_file_size_bytes": None,
+                "input_file_modified_time": None,
+                "series_index": None,
+                "series_name": None,
+                "plane_index": None,
+            }
+
+        input_path = self.file_info.path
+        series_index = (
+            self.config.LIF_SERIES_INDEX
+            if self.file_info.format == InputFormat.LIF
+            else None
+        )
+        plane_index = (
+            self.config.LIF_PLANE_INDEX
+            if self.file_info.format == InputFormat.LIF
+            else None
+        )
+        series_name = getattr(self.metadata, "series_name", None)
+
+        return {
+            "input_file": str(input_path),
+            "input_filename": input_path.name,
+            "input_file_extension": input_path.suffix,
+            "input_file_type": self.file_info.format.value,
+            "input_file_size_bytes": (
+                input_path.stat().st_size if input_path.exists() else None
+            ),
+            "input_file_modified_time": self._timestamp_from_path(input_path),
+            "series_index": series_index,
+            "series_name": series_name,
+            "plane_index": plane_index,
+        }
+
+    def _registration_qc_payload(
+        self,
+        ops: Dict[str, Any],
+        ops_path: Path,
+        suite2p_dir: Path,
+    ) -> Dict[str, Any]:
+        nframes_registered = ops.get(
+            "nframes",
+            self.suite2p_options.get("nframes") if self.suite2p_options else None,
+        )
+        badframes = ops.get("badframes")
+        if badframes is None:
+            num_badframes = None
+            badframes_fraction = None
+        else:
+            badframes_array = np.asarray(badframes, dtype=bool)
+            num_badframes = int(np.sum(badframes_array))
+            denominator = int(badframes_array.size or nframes_registered or 0)
+            badframes_fraction = (
+                float(num_badframes / denominator) if denominator > 0 else None
+            )
+
+        xoff_stats = self._array_stats(ops.get("xoff"))
+        yoff_stats = self._array_stats(ops.get("yoff"))
+        corrxy_stats = self._array_stats(ops.get("corrXY"))
+        flag_path = suite2p_dir / ".registration_complete"
+
+        return {
+            "registration_complete": flag_path.exists(),
+            "registration_completed_at": self._timestamp_from_path(flag_path),
+            "suite2p_output_dir": str(suite2p_dir),
+            "ops_path": str(ops_path),
+            "meanImg_shape": self._array_shape(ops.get("meanImg")),
+            "meanImg_chan2_shape": self._array_shape(ops.get("meanImg_chan2")),
+            "refImg_shape": self._array_shape(ops.get("refImg")),
+            "num_badframes": num_badframes,
+            "badframes_fraction": badframes_fraction,
+            "xoff_min": xoff_stats["min"],
+            "xoff_max": xoff_stats["max"],
+            "xoff_mean": xoff_stats["mean"],
+            "xoff_std": xoff_stats["std"],
+            "yoff_min": yoff_stats["min"],
+            "yoff_max": yoff_stats["max"],
+            "yoff_mean": yoff_stats["mean"],
+            "yoff_std": yoff_stats["std"],
+            "corrXY_mean": corrxy_stats["mean"],
+            "corrXY_min": corrxy_stats["min"],
+            "corrXY_max": corrxy_stats["max"],
+            "suite2p_timing": self._json_safe(ops.get("timing")),
+        }
+
     def write_pipeline_metadata(self) -> None:
         if self.suite2p_options is None:
             return
 
-        metadata_path = (
-            Path(self.data_path) / "suite2p" / "plane0" / "pipeline_metadata.json"
-        )
+        suite2p_dir = get_suite2p_output_dir(self.data_path, self.suite2p_options)
+        plane_path = suite2p_dir / "plane0"
+        metadata_path = plane_path / "pipeline_metadata.json"
         metadata_path.parent.mkdir(parents=True, exist_ok=True)
+        ops_path = plane_path / "ops.npy"
+        ops = self._load_suite2p_ops(ops_path)
+
+        metadata = self.metadata
+        nframes_registered = ops.get("nframes", self.suite2p_options.get("nframes"))
+        channel_indices = ops.get(
+            "channel_indices",
+            self.suite2p_options.get("channel_indices"),
+        )
+
         payload = {
-            "source_nchannels": self.metadata.nchannels if self.metadata else None,
+            **self._input_file_metadata_payload(),
+            "source_nframes": metadata.nframes if metadata else None,
+            "nframes_registered": (
+                int(nframes_registered) if nframes_registered is not None else None
+            ),
+            "source_nchannels": metadata.nchannels if metadata else None,
+            "converted_nchannels": self._available_channel_count(),
             "nchannels": self._available_channel_count(),
+            "channel_indices": self._json_safe(channel_indices),
+            "nplanes": (
+                metadata.nplanes if metadata else self.suite2p_options.get("nplanes")
+            ),
+            "Ly": self._json_safe(ops.get("Ly", self.suite2p_options.get("Ly"))),
+            "Lx": self._json_safe(ops.get("Lx", self.suite2p_options.get("Lx"))),
+            "pixel_resolution": metadata.pix_resolution if metadata else None,
+            "frame_interval_seconds": metadata.finterval if metadata else None,
+            "fs": metadata.fs if metadata else self.suite2p_options.get("fs"),
+            "frames_per_channel_per_plane": (
+                metadata.frames_per_channel_per_plane if metadata else None
+            ),
+            "do_registration": self.suite2p_options.get("do_registration"),
+            "two_step_registration": self.suite2p_options.get("two_step_registration"),
+            "nonrigid": self.suite2p_options.get("nonrigid"),
+            "maxregshift": self.suite2p_options.get("maxregshift"),
+            "subpixel": self.suite2p_options.get("subpixel"),
+            "align_by_chan": self.suite2p_options.get("align_by_chan"),
+            "functional_chan": self.suite2p_options.get("functional_chan"),
+            "batch_size": self.suite2p_options.get("batch_size"),
+            "nimg_init": self.suite2p_options.get("nimg_init"),
+            "do_regmetrics": self.suite2p_options.get(
+                "do_regmetrics", self.do_regmetrics
+            ),
+            "reg_tif": self.suite2p_options.get("reg_tif", self.reg_tif),
+            "reg_tif_chan2": self.suite2p_options.get("reg_tif_chan2"),
+            "roidetect": self.suite2p_options.get("roidetect"),
+            "spikedetect": self.suite2p_options.get("spikedetect"),
+            "input_format": self.suite2p_options.get("input_format"),
+            **self._registration_qc_payload(ops, ops_path, suite2p_dir),
             "registration_channel": self.registration_channel,
             "suite2p_align_by_chan": self.suite2p_options.get("align_by_chan"),
             "segmentation_channel": self.segmentation_channel,
             "segmentation_projection": self.segmentation_projection,
             "trace_channels": self.trace_channels,
-            "do_regmetrics": self.do_regmetrics,
-            "reg_file": self.suite2p_options.get("reg_file"),
-            "reg_file_chan2": self.suite2p_options.get("reg_file_chan2"),
+            "alignment_only": self.alignment_only,
+            "export_correspondence": self.export_correspondence,
+            "manual_correction": self.manual_correction,
+            "model_path": self.model_path,
+            "use_gpu": self.use_gpu,
+            "reg_file": self._json_safe(
+                ops.get("reg_file", self.suite2p_options.get("reg_file"))
+            ),
+            "reg_file_chan2": self._json_safe(
+                ops.get("reg_file_chan2", self.suite2p_options.get("reg_file_chan2"))
+            ),
+            "pipeline_version": self._package_version("astroglial-morphology"),
+            "python_version": sys.version.split()[0],
+            "suite2p_version": self._json_safe(
+                ops.get("suite2p_version") or self._package_version("suite2p")
+            ),
+            "numpy_version": np.__version__,
+            "platform": platform.platform(),
+            "created_at": datetime.now().isoformat(timespec="seconds"),
+            "hostname": socket.gethostname(),
         }
+        payload = self._json_safe(payload)
         metadata_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
         logger.info("Saved pipeline metadata to %s", metadata_path)
 
@@ -605,6 +861,9 @@ class Pipeline:
         self.trace_channels = self._normalize_trace_channels(trace_channels)
         self.segmentation_projection = segmentation_projection
         self.do_regmetrics = do_regmetrics
+        self.manual_correction = manual_correction
+        self.export_correspondence = export_correspondence
+        self.alignment_only = alignment_only
         should_export_correspondence = export_correspondence and not alignment_only
 
         # Step 1: Detect input

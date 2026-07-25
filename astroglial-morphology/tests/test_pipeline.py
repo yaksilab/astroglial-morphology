@@ -1,5 +1,6 @@
 """Integration tests for the complete pipeline."""
 
+import json
 import pytest
 import numpy as np
 import logging
@@ -291,6 +292,150 @@ class TestPipelineCorrespondenceExport:
         pipeline.export_correspondence_data(trace_channels=[1])
 
         assert mock_export.call_args.kwargs["trace_channels"] == [1]
+
+
+class TestPipelineMetadata:
+    """Tests for pipeline metadata export."""
+
+    @patch('astroglial_morphology.pipeline.Segmentation')
+    def test_write_pipeline_metadata_includes_acquisition_settings_and_qc(
+        self, mock_seg_class, temp_dir
+    ):
+        lif_file = temp_dir / "test.lif"
+        lif_file.write_bytes(b"fake-lif")
+        suite2p_dir = temp_dir / "suite2p"
+        plane_path = suite2p_dir / "plane0"
+        plane_path.mkdir(parents=True)
+        complete_flag = suite2p_dir / ".registration_complete"
+        complete_flag.touch()
+
+        data_bin = plane_path / "data.bin"
+        data_chan2_bin = plane_path / "data_chan2.bin"
+        data_bin.touch()
+        data_chan2_bin.touch()
+        np.save(
+            plane_path / "ops.npy",
+            {
+                "Ly": 12,
+                "Lx": 34,
+                "nframes": 5,
+                "nchannels": 2,
+                "channel_indices": [0, 1],
+                "reg_file": str(data_bin),
+                "reg_file_chan2": str(data_chan2_bin),
+                "meanImg": np.zeros((12, 34), dtype=np.float32),
+                "meanImg_chan2": np.zeros((12, 34), dtype=np.float32),
+                "refImg": np.zeros((12, 34), dtype=np.float32),
+                "badframes": np.array([False, True, False, True, False]),
+                "xoff": np.array([-1.0, 0.0, 2.0]),
+                "yoff": np.array([1.0, 3.0, 5.0]),
+                "corrXY": np.array([0.2, 0.5, 0.8]),
+                "timing": {"registration": np.float32(1.25)},
+                "suite2p_version": "0.14.5",
+            },
+            allow_pickle=True,
+        )
+
+        pipeline = Pipeline(data_path=str(temp_dir), use_gpu=True, reg_tif=True)
+        pipeline.file_info = InputFileInfo(path=lif_file, format=InputFormat.LIF)
+        pipeline.metadata = Metadata(
+            nframes=5,
+            nchannels=2,
+            nplanes=1,
+            finterval=2.0,
+            pix_resolution=1.76,
+            series_name="Series001",
+            series_index=0,
+        )
+        pipeline.suite2p_options = {
+            "nplanes": 1,
+            "nchannels": 2,
+            "fs": 0.5,
+            "do_registration": True,
+            "two_step_registration": False,
+            "nonrigid": False,
+            "maxregshift": 0.11,
+            "subpixel": 10,
+            "align_by_chan": 2,
+            "functional_chan": 1,
+            "batch_size": 500,
+            "nimg_init": 300,
+            "do_regmetrics": True,
+            "reg_tif": True,
+            "reg_tif_chan2": True,
+            "roidetect": False,
+            "spikedetect": False,
+            "reg_file": str(data_bin),
+            "reg_file_chan2": str(data_chan2_bin),
+            "input_format": "binary",
+        }
+        pipeline.registration_channel = 1
+        pipeline.segmentation_channel = "both"
+        pipeline.segmentation_projection = "max_projection"
+        pipeline.trace_channels = [0, 1]
+        pipeline.do_regmetrics = True
+        pipeline.manual_correction = True
+        pipeline.export_correspondence = True
+        pipeline.alignment_only = True
+
+        pipeline.write_pipeline_metadata()
+
+        payload = json.loads((plane_path / "pipeline_metadata.json").read_text())
+        assert payload["input_file"] == str(lif_file)
+        assert payload["input_filename"] == "test.lif"
+        assert payload["input_file_extension"] == ".lif"
+        assert payload["input_file_type"] == "lif"
+        assert payload["input_file_size_bytes"] == 8
+        assert payload["series_index"] == 0
+        assert payload["series_name"] == "Series001"
+        assert payload["plane_index"] == 0
+        assert payload["source_nframes"] == 5
+        assert payload["nframes_registered"] == 5
+        assert payload["source_nchannels"] == 2
+        assert payload["converted_nchannels"] == 2
+        assert payload["channel_indices"] == [0, 1]
+        assert payload["nplanes"] == 1
+        assert payload["Ly"] == 12
+        assert payload["Lx"] == 34
+        assert payload["pixel_resolution"] == 1.76
+        assert payload["frame_interval_seconds"] == 2.0
+        assert payload["fs"] == 0.5
+        assert payload["frames_per_channel_per_plane"] == 2
+        assert payload["registration_complete"] is True
+        assert payload["registration_completed_at"] is not None
+        assert payload["suite2p_output_dir"] == str(suite2p_dir)
+        assert payload["ops_path"] == str(plane_path / "ops.npy")
+        assert payload["meanImg_shape"] == [12, 34]
+        assert payload["meanImg_chan2_shape"] == [12, 34]
+        assert payload["refImg_shape"] == [12, 34]
+        assert payload["num_badframes"] == 2
+        assert payload["badframes_fraction"] == 0.4
+        assert payload["xoff_min"] == -1.0
+        assert payload["xoff_max"] == 2.0
+        assert payload["xoff_mean"] == pytest.approx(1.0 / 3.0)
+        assert payload["yoff_std"] == pytest.approx(np.std([1.0, 3.0, 5.0]))
+        assert payload["corrXY_mean"] == pytest.approx(0.5)
+        assert payload["suite2p_timing"]["registration"] == pytest.approx(1.25)
+        assert payload["registration_channel"] == 1
+        assert payload["suite2p_align_by_chan"] == 2
+        assert payload["do_registration"] is True
+        assert payload["do_regmetrics"] is True
+        assert payload["reg_tif"] is True
+        assert payload["reg_tif_chan2"] is True
+        assert payload["input_format"] == "binary"
+        assert payload["alignment_only"] is True
+        assert payload["export_correspondence"] is True
+        assert payload["manual_correction"] is True
+        assert payload["model_path"] == pipeline.model_path
+        assert payload["use_gpu"] is True
+        assert payload["reg_file"] == str(data_bin)
+        assert payload["reg_file_chan2"] == str(data_chan2_bin)
+        assert payload["python_version"]
+        assert payload["suite2p_version"] == "0.14.5"
+        assert payload["numpy_version"] == np.__version__
+        assert payload["platform"]
+        assert payload["created_at"]
+        assert payload["hostname"]
 
 
 class TestPipelineRun:
