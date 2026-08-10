@@ -14,6 +14,11 @@ from astroglial_morphology.correspondence import (
     VALID_SUBSEGMENTATION_MODES,
     SUBSEGMENTATION_MODE_EQUAL_LENGTH,
 )
+from astroglial_morphology.ensemble import (
+    DEFAULT_PROFILE_NAME,
+    ModelAssetResolver,
+    load_ensemble_profile,
+)
 from astroglial_morphology.pipeline import Pipeline
 
 
@@ -42,7 +47,8 @@ Examples:
     )
     parser.add_argument(
         "data_path",
-        help="Path to directory containing input files (.tif or .lif)",
+        nargs="?",
+        help="Path to raw LIF/TIFF data or an existing Suite2p plane0 directory",
     )
     parser.add_argument(
         "--reg-tif",
@@ -54,6 +60,39 @@ Examples:
         "--model",
         help="Path to custom Cellpose model (optional)",
         default=None,
+    )
+    parser.add_argument(
+        "--segmentation-mode",
+        choices=["single", "ensemble"],
+        default="single",
+        help="Segmentation strategy; single preserves the existing pipeline default",
+    )
+    parser.add_argument(
+        "--ensemble-profile",
+        default=DEFAULT_PROFILE_NAME,
+        help="Packaged ensemble profile to use",
+    )
+    parser.add_argument(
+        "--ensemble-config",
+        default=None,
+        help="Path to a complete custom three-role ensemble JSON profile",
+    )
+    parser.add_argument(
+        "--pixels-per-micron",
+        type=float,
+        default=None,
+        help="Physical calibration override, in pixels per micron",
+    )
+    parser.add_argument(
+        "--model-cache-dir",
+        default=None,
+        help="Directory used to cache verified ensemble model assets",
+    )
+    parser.add_argument(
+        "--download-models",
+        action="store_true",
+        default=False,
+        help="Download and verify ensemble models, then exit without processing data",
     )
     parser.add_argument(
         "--gpu",
@@ -148,6 +187,25 @@ Examples:
     setup_logging()
     logger = get_logger(__name__)
 
+    if args.download_models:
+        try:
+            profile, assets = load_ensemble_profile(
+                profile_name=args.ensemble_profile,
+                config_path=args.ensemble_config,
+            )
+            downloaded = ModelAssetResolver(assets, args.model_cache_dir).prefetch(profile)
+            for role, path in downloaded.items():
+                logger.info("Verified %s model: %s", role, path)
+            return
+        except Exception as e:
+            logger.exception("Model prefetch failed: %s", e)
+            sys.exit(1)
+
+    if args.data_path is None:
+        parser.error("data_path is required unless --download-models is used")
+    if args.segmentation_mode == "ensemble" and args.model is not None:
+        parser.error("--model applies to single-model mode; use --ensemble-config for ensemble models")
+
     # Validate data path
     data_path = Path(args.data_path)
     if not data_path.exists():
@@ -164,6 +222,11 @@ Examples:
             model_path=args.model,
             use_gpu=args.gpu,
             reg_tif=args.reg_tif,
+            segmentation_mode=args.segmentation_mode,
+            ensemble_profile=args.ensemble_profile,
+            ensemble_config=args.ensemble_config,
+            pixels_per_micron=args.pixels_per_micron,
+            model_cache_dir=args.model_cache_dir,
         )
 
         results = pipeline.run(

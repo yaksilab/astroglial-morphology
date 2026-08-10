@@ -13,14 +13,27 @@ from typing import Optional, Dict, Any, Sequence, Union
 import numpy as np
 
 from .config import PipelineConfig
-from .io import detect_input_file, load_metadata, InputFormat
+from .io import (
+    detect_input_file,
+    is_suite2p_plane,
+    load_metadata,
+    load_suite2p_metadata,
+    InputFileInfo,
+    InputFormat,
+)
 from .registration import (
     do_registration,
     check_registration_complete,
     get_suite2p_output_dir,
 )
-from .binary_utils import create_projections
+from .binary_utils import create_projections, create_projections_from_plane_path
 from .segmentation import Segmentation
+from .ensemble import (
+    DEFAULT_PROFILE_NAME,
+    EnsembleSegmentationResult,
+    ThreeModelEnsembleSegmenter,
+    load_ensemble_profile,
+)
 from .classifier import classify_cells
 from .correspondence import (
     export_correspondence_products,
@@ -59,6 +72,11 @@ class Pipeline:
         use_gpu: bool = False,
         reg_tif: bool = False,
         config: Optional[PipelineConfig] = None,
+        segmentation_mode: str = "single",
+        ensemble_profile: str = DEFAULT_PROFILE_NAME,
+        ensemble_config: Optional[str] = None,
+        pixels_per_micron: Optional[float] = None,
+        model_cache_dir: Optional[str] = None,
     ):
         """
         Initialize the pipeline.
@@ -69,19 +87,36 @@ class Pipeline:
             use_gpu: Whether to use GPU for segmentation
             reg_tif: Whether to save registered TIFF files
             config: Custom configuration object. If None, uses defaults.
+            segmentation_mode: ``single`` (legacy default) or ``ensemble``.
+            ensemble_profile: Packaged ensemble profile name.
+            ensemble_config: Optional complete JSON ensemble profile.
+            pixels_per_micron: Explicit physical calibration override.
+            model_cache_dir: Optional cache directory for ensemble model assets.
         """
         self.data_path = data_path
         self.use_gpu = use_gpu
         self.reg_tif = reg_tif
         self.config = config or PipelineConfig()
+        if segmentation_mode not in {"single", "ensemble"}:
+            raise ValueError("segmentation_mode must be 'single' or 'ensemble'")
+        self.segmentation_mode = segmentation_mode
+        self.ensemble_profile = ensemble_profile
+        self.ensemble_config = ensemble_config
+        self.pixels_per_micron_override = pixels_per_micron
+        self.pixels_per_micron: Optional[float] = None
+        self.calibration_source: Optional[str] = None
+        self.model_cache_dir = model_cache_dir
 
         if model_path is None:
             model_path = self.config.get_model_path()
         self.model_path = model_path
 
-        self.segmenter = Segmentation(
-            model_path=self.model_path,
-            gpu=self.use_gpu,
+        # Preserve the eagerly-created legacy segmenter for existing callers
+        # and tests, but avoid loading an unrelated model in ensemble mode.
+        self.segmenter = (
+            Segmentation(model_path=self.model_path, gpu=self.use_gpu)
+            if self.segmentation_mode == "single"
+            else None
         )
 
         self.file_info = None
@@ -100,6 +135,9 @@ class Pipeline:
         self.manual_correction = False
         self.export_correspondence = False
         self.alignment_only = False
+        self.input_mode = "raw"
+        self.plane_path: Optional[Path] = None
+        self.ensemble_result: Optional[EnsembleSegmentationResult] = None
 
     @staticmethod
     def _normalize_trace_channels(
@@ -176,7 +214,20 @@ class Pipeline:
                 self._validate_channel_index(channel, "Trace")
 
     def _suite2p_output_dir(self) -> Path:
+        if self.input_mode == "suite2p" and self.plane_path is not None:
+            return self.plane_path.parent
         return get_suite2p_output_dir(self.data_path, self.suite2p_options)
+
+    def _plane_path(self) -> Path:
+        if self.input_mode == "suite2p" and self.plane_path is not None:
+            return self.plane_path
+        return self._suite2p_output_dir() / "plane0"
+
+    def _experiment_dir(self) -> Path:
+        plane = self._plane_path()
+        if self.input_mode == "suite2p" and plane.parent.name == "suite2p":
+            return plane.parent.parent
+        return Path(self.data_path)
 
     def _invalidate_registration_completion(self, reason: str) -> None:
         flag_path = self._suite2p_output_dir() / ".registration_complete"
@@ -257,9 +308,57 @@ class Pipeline:
     def detect_input(self) -> None:
         """Detect input file in the data directory."""
         logger.info("Detecting input file...")
+        if is_suite2p_plane(self.data_path):
+            self.input_mode = "suite2p"
+            self.plane_path = Path(self.data_path)
+            self.file_info = InputFileInfo(
+                path=self.plane_path,
+                format=InputFormat.SUITE2P,
+            )
+            logger.info("Using existing Suite2p plane input: %s", self.plane_path)
+            return
+        self.input_mode = "raw"
         self.file_info = detect_input_file(
             self.data_path, format_priority=self.config.FILE_FORMAT_PRIORITY
         )
+
+    @staticmethod
+    def _valid_pixels_per_micron(value: Any) -> Optional[float]:
+        try:
+            value = float(value)
+        except (TypeError, ValueError):
+            return None
+        return value if np.isfinite(value) and value > 0 else None
+
+    def _resolve_direct_suite2p_calibration(self) -> tuple[Optional[float], Optional[str]]:
+        """Resolve calibration from CLI, then the nearest pipeline metadata file."""
+
+        explicit = self._valid_pixels_per_micron(self.pixels_per_micron_override)
+        if self.pixels_per_micron_override is not None and explicit is None:
+            raise ValueError("pixels_per_micron must be a finite positive number")
+        if explicit is not None:
+            return explicit, "cli"
+        if self.plane_path is None:
+            return None, None
+
+        candidates = (
+            self.plane_path / "pipeline_metadata.json",
+            self.plane_path.parent / "pipeline_metadata.json",
+            self.plane_path.parent.parent / "pipeline_metadata.json",
+        )
+        for path in candidates:
+            if not path.is_file():
+                continue
+            try:
+                payload = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError) as exc:
+                logger.warning("Ignoring unreadable pipeline metadata %s: %s", path, exc)
+                continue
+            for key in ("pixels_per_micron", "pixel_resolution"):
+                resolved = self._valid_pixels_per_micron(payload.get(key))
+                if resolved is not None:
+                    return resolved, f"metadata:{path} ({key})"
+        return None, None
 
     def load_metadata(self) -> None:
         """Load metadata from the detected input file."""
@@ -267,7 +366,22 @@ class Pipeline:
             raise RuntimeError("Must call detect_input() before load_metadata()")
 
         logger.info("Loading metadata...")
-        self.metadata = load_metadata(self.file_info)
+        if self.input_mode == "suite2p":
+            self.pixels_per_micron, self.calibration_source = (
+                self._resolve_direct_suite2p_calibration()
+            )
+            self.metadata = load_suite2p_metadata(
+                self._plane_path(),
+                pixels_per_micron=self.pixels_per_micron,
+            )
+        else:
+            self.metadata = load_metadata(self.file_info)
+            explicit = self._valid_pixels_per_micron(self.pixels_per_micron_override)
+            if self.pixels_per_micron_override is not None and explicit is None:
+                raise ValueError("pixels_per_micron must be a finite positive number")
+            inherited = self._valid_pixels_per_micron(self.metadata.pix_resolution)
+            self.pixels_per_micron = explicit if explicit is not None else inherited
+            self.calibration_source = "cli" if explicit is not None else "input_metadata"
 
     def prepare_data(self) -> None:
         """
@@ -278,6 +392,22 @@ class Pipeline:
         """
         if self.file_info is None or self.metadata is None:
             raise RuntimeError("Must call detect_input() and load_metadata() first")
+
+        if self.input_mode == "suite2p":
+            ops = self._load_suite2p_ops(self._plane_path() / "ops.npy")
+            nframes = int(ops.get("nframes", 0))
+            if nframes <= 0:
+                raise ValueError("Suite2p ops.npy must contain a positive nframes value")
+            self.suite2p_options = {
+                "input_format": "suite2p",
+                "nchannels": int(self.metadata.nchannels),
+                "nplanes": int(self.metadata.nplanes),
+                "nframes": nframes,
+                "fs": self.metadata.fs,
+                **self.config.calculate_batch_params(nframes),
+            }
+            logger.info("Using existing Suite2p plane; skipping raw-data preparation")
+            return
 
         if self.file_info.format == InputFormat.LIF:
             # Check if LIF has already been converted to binary
@@ -376,6 +506,15 @@ class Pipeline:
         if self.suite2p_options is None:
             raise RuntimeError("Must call prepare_data() before run_registration()")
 
+        if self.input_mode == "suite2p":
+            if force:
+                raise ValueError(
+                    "--force-registration cannot be used with direct Suite2p input; "
+                    "provide raw LIF/TIFF data to re-register"
+                )
+            logger.info("Suite2p-only input is already registered; skipping registration")
+            return False
+
         registration_complete = check_registration_complete(
             self.data_path, self.suite2p_options
         )
@@ -405,8 +544,13 @@ class Pipeline:
         logger.info("Creating projections...")
         batch_size = self.suite2p_options.get("batch_size", 500)
 
-        suite2p_path = os.path.join(self.data_path, "suite2p")
-        self.projections = create_projections(suite2p_path, batch_size=batch_size)
+        if self.input_mode == "suite2p":
+            self.projections = create_projections_from_plane_path(
+                self._plane_path(), batch_size=batch_size
+            )
+        else:
+            suite2p_path = os.path.join(self.data_path, "suite2p")
+            self.projections = create_projections(suite2p_path, batch_size=batch_size)
 
         logger.info("Projections created")
         return self.projections
@@ -474,16 +618,51 @@ class Pipeline:
         )
 
         save_name = f"{projection_type}_{channel_suffix}_image"
-        save_path = os.path.join(self.data_path, "suite2p", "plane0", save_name)
+        save_path = str(self._plane_path() / save_name)
         self.segmentation_base_path = save_path
-        diameter = self.config.calculate_diameter(self.metadata.pix_resolution)
+        self.ensemble_result = None
 
-        self.masks = self.segmenter.segment_img(
-            segmentation_image,
-            save_path,
-            diameter=diameter,
-            **segmentation_kwargs,
-        )
+        if self.segmentation_mode == "ensemble":
+            if self.pixels_per_micron is None:
+                raise ValueError(
+                    "Ensemble segmentation requires pixels-per-micron calibration. "
+                    "Add pixels_per_micron/pixel_resolution to pipeline_metadata.json "
+                    "or pass --pixels-per-micron."
+                )
+            profile, assets = load_ensemble_profile(
+                profile_name=self.ensemble_profile,
+                config_path=self.ensemble_config,
+            )
+            ensemble = ThreeModelEnsembleSegmenter(
+                profile=profile,
+                assets=assets,
+                pixels_per_micron=self.pixels_per_micron,
+                gpu=self.use_gpu,
+                model_cache_dir=self.model_cache_dir,
+            )
+            self.ensemble_result = ensemble.segment_img(
+                segmentation_image,
+                save_path,
+                **segmentation_kwargs,
+            )
+            self.masks = self.ensemble_result.masks
+        else:
+            if self.segmenter is None:
+                raise RuntimeError("Single-model segmenter was not initialized")
+            # Direct Suite2p input has no raw acquisition metadata by default.
+            # In that case let Cellpose use its learned model diameter instead of
+            # inventing a physical calibration.
+            diameter = (
+                None
+                if self.input_mode == "suite2p" and self.pixels_per_micron is None
+                else self.config.calculate_diameter(self.metadata.pix_resolution)
+            )
+            self.masks = self.segmenter.segment_img(
+                segmentation_image,
+                save_path,
+                diameter=diameter,
+                **segmentation_kwargs,
+            )
 
         labels = np.unique(self.masks)
         labels = labels[labels != 0]
@@ -546,9 +725,7 @@ class Pipeline:
         if self.segmentation_base_path:
             mask_path = f"{self.segmentation_base_path}_seg.npy"
         else:
-            mask_path = os.path.join(
-                self.data_path, "suite2p", "plane0", "mean_image_seg.npy"
-            )
+            mask_path = str(self._plane_path() / "mean_image_seg.npy")
 
         self.masks = np.load(mask_path, allow_pickle=True).item()["masks"]
         logger.info(f"Loaded corrected masks with {len(np.unique(self.masks))} labels")
@@ -603,9 +780,7 @@ class Pipeline:
         if self.segmentation_base_path:
             template_seg_path = Path(f"{self.segmentation_base_path}_seg.npy")
         else:
-            template_seg_path = (
-                Path(self.data_path) / "suite2p" / "plane0" / "mean_image_seg.npy"
-            )
+            template_seg_path = self._plane_path() / "mean_image_seg.npy"
         if not template_seg_path.exists():
             raise FileNotFoundError(
                 f"Cannot locate segmentation file for template metadata: {template_seg_path}"
@@ -625,7 +800,7 @@ class Pipeline:
         subsegment_pixel_length = round(segment_length * self.metadata.pix_resolution)
 
         outputs = export_correspondence_products(
-            data_path=Path(self.data_path) / "suite2p" / "plane0",
+            data_path=self._plane_path(),
             template_seg_path=template_seg_path,
             masks=self.masks,
             classifications=classification_rows,
@@ -830,8 +1005,8 @@ class Pipeline:
         if self.suite2p_options is None:
             return
 
-        suite2p_dir = get_suite2p_output_dir(self.data_path, self.suite2p_options)
-        plane_path = suite2p_dir / "plane0"
+        suite2p_dir = self._suite2p_output_dir()
+        plane_path = self._plane_path()
         metadata_path = plane_path / "pipeline_metadata.json"
         metadata_path.parent.mkdir(parents=True, exist_ok=True)
         ops_path = plane_path / "ops.npy"
@@ -859,7 +1034,15 @@ class Pipeline:
             ),
             "Ly": self._json_safe(ops.get("Ly", self.suite2p_options.get("Ly"))),
             "Lx": self._json_safe(ops.get("Lx", self.suite2p_options.get("Lx"))),
-            "pixel_resolution": metadata.pix_resolution if metadata else None,
+            # ``pixel_resolution`` is retained for older metadata consumers.
+            # The canonical name makes its units explicit: pixels / micron.
+            "pixel_resolution": (
+                None
+                if self.input_mode == "suite2p" and self.pixels_per_micron is None
+                else metadata.pix_resolution if metadata else None
+            ),
+            "pixels_per_micron": self.pixels_per_micron,
+            "calibration_source": self.calibration_source,
             "frame_interval_seconds": metadata.finterval if metadata else None,
             "fs": metadata.fs if metadata else self.suite2p_options.get("fs"),
             "frames_per_channel_per_plane": (
@@ -882,6 +1065,7 @@ class Pipeline:
             "roidetect": self.suite2p_options.get("roidetect"),
             "spikedetect": self.suite2p_options.get("spikedetect"),
             "input_format": self.suite2p_options.get("input_format"),
+            "input_mode": self.input_mode,
             **self._registration_qc_payload(ops, ops_path, suite2p_dir),
             "registration_channel": self.registration_channel,
             "suite2p_align_by_chan": self.suite2p_options.get("align_by_chan"),
@@ -892,6 +1076,11 @@ class Pipeline:
             "export_correspondence": self.export_correspondence,
             "manual_correction": self.manual_correction,
             "model_path": self.model_path,
+            "segmentation": (
+                self.ensemble_result.metadata()
+                if self.ensemble_result is not None
+                else {"mode": "single", "output": self.segmentation_base_path}
+            ),
             "use_gpu": self.use_gpu,
             "reg_file": self._json_safe(
                 ops.get("reg_file", self.suite2p_options.get("reg_file"))
@@ -963,6 +1152,20 @@ class Pipeline:
         # Step 1: Detect input
         self.detect_input()
 
+        if self.input_mode == "suite2p":
+            incompatible = []
+            if force_registration:
+                incompatible.append("--force-registration")
+            if self.reg_tif:
+                incompatible.append("--reg-tif")
+            if do_regmetrics:
+                incompatible.append("--regmetrics")
+            if incompatible:
+                raise ValueError(
+                    f"{', '.join(incompatible)} cannot be used with direct Suite2p input; "
+                    "the input is already registered"
+                )
+
         # Step 2: Load metadata
         self.load_metadata()
         self._validate_run_channels(should_export_correspondence)
@@ -998,6 +1201,9 @@ class Pipeline:
             projection_type=segmentation_projection,
             segmentation_channel=self.segmentation_channel,
         )
+        # Refresh metadata now that the final (single or combined) output and
+        # ensemble mask statistics are known.
+        self.write_pipeline_metadata()
 
         # Step 7: Classify cells
         self.classify_cells()
@@ -1020,4 +1226,9 @@ class Pipeline:
             "masks": self.masks,
             "classification": self.classification,
             "correspondence": correspondence_outputs,
+            "segmentation": (
+                self.ensemble_result.metadata()
+                if self.ensemble_result is not None
+                else {"mode": "single", "output": self.segmentation_base_path}
+            ),
         }

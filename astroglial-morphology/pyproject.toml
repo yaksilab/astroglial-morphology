@@ -22,6 +22,7 @@ dependencies = [
 
 [tool.poetry]
 packages = [{include = "astroglial_morphology", from = "src"}]
+include = [{path = "src/astroglial_morphology/profiles/*.json", format = ["sdist", "wheel"]}]
 
 
 [tool.poetry.group.test.dependencies]

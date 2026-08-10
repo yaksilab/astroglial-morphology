@@ -23,7 +23,11 @@ class BinaryDataProcessor:
     """
 
     def __init__(
-        self, suite2p_folder_path: str, plane_idx: int = 0, channel_idx: int = 0
+        self,
+        suite2p_folder_path: str,
+        plane_idx: int = 0,
+        channel_idx: int = 0,
+        direct_plane_path: Optional[str | Path] = None,
     ):
         """
         Initialize the binary data processor.
@@ -37,7 +41,11 @@ class BinaryDataProcessor:
         self.channel_idx = channel_idx
 
         # Construct paths to plane-specific files
-        self.plane_path = self.suite2p_folder_path / f"plane{plane_idx}"
+        self.plane_path = (
+            Path(direct_plane_path)
+            if direct_plane_path is not None
+            else self.suite2p_folder_path / f"plane{plane_idx}"
+        )
         self.ops_path = self.plane_path / "ops.npy"
         self.bin_file_path = self._get_channel_binary_path()
 
@@ -350,7 +358,10 @@ class BinaryDataProcessor:
 
 
 def load_binary_data(
-    suite2p_folder_path: str, plane_idx: int = 0, channel_idx: int = 0
+    suite2p_folder_path: str,
+    plane_idx: int = 0,
+    channel_idx: int = 0,
+    direct_plane_path: Optional[str | Path] = None,
 ) -> BinaryDataProcessor:
     """
     Convenience function to load binary data.
@@ -362,7 +373,12 @@ def load_binary_data(
     Returns:
         BinaryDataProcessor instance
     """
-    return BinaryDataProcessor(suite2p_folder_path, plane_idx, channel_idx)
+    return BinaryDataProcessor(
+        suite2p_folder_path,
+        plane_idx,
+        channel_idx,
+        direct_plane_path=direct_plane_path,
+    )
 
 
 def create_projections(
@@ -371,6 +387,7 @@ def create_projections(
     output_dir: Optional[str] = None,
     save_images: bool = True,
     batch_size: Optional[int] = None,
+    direct_plane_path: Optional[str | Path] = None,
 ) -> Dict[str, np.ndarray]:
     """
     Create all standard projections and save them as images.
@@ -391,7 +408,12 @@ def create_projections(
         - sum : Sum projection image
 
     """
-    first_processor = load_binary_data(suite2p_folder_path, plane_idx, channel_idx=0)
+    first_processor = load_binary_data(
+        suite2p_folder_path,
+        plane_idx,
+        channel_idx=0,
+        direct_plane_path=direct_plane_path,
+    )
     nchannels = int(first_processor.ops.get("nchannels", 1)) if first_processor.ops else 1
 
     processors = [first_processor]
@@ -404,7 +426,12 @@ def create_projections(
             )
         if nchannels > 1:
             processors.append(
-                load_binary_data(suite2p_folder_path, plane_idx, channel_idx=1)
+                load_binary_data(
+                    suite2p_folder_path,
+                    plane_idx,
+                    channel_idx=1,
+                    direct_plane_path=direct_plane_path,
+                )
             )
 
         for channel_idx, processor in enumerate(processors):
@@ -433,3 +460,31 @@ def create_projections(
             processor.close()
 
     return projections
+
+
+def create_projections_from_plane_path(
+    plane_path: str | Path,
+    output_dir: Optional[str] = None,
+    save_images: bool = True,
+    batch_size: Optional[int] = None,
+) -> Dict[str, np.ndarray]:
+    """Create projections from a direct Suite2p ``plane0`` directory.
+
+    This is a small adapter around :func:`create_projections` that preserves
+    its public API while allowing callers with an already-registered plane to
+    avoid reconstructing a ``suite2p/plane0`` parent layout.
+    """
+
+    plane = Path(plane_path)
+    if not (plane / "ops.npy").is_file() or not (plane / "data.bin").is_file():
+        raise FileNotFoundError(
+            f"Suite2p plane must contain ops.npy and data.bin: {plane}"
+        )
+    return create_projections(
+        str(plane.parent),
+        plane_idx=0,
+        output_dir=output_dir or str(plane),
+        save_images=save_images,
+        batch_size=batch_size,
+        direct_plane_path=plane,
+    )

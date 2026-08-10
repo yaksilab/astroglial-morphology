@@ -14,6 +14,7 @@ class InputFormat(Enum):
 
     LIF = "lif"
     TIFF = "tif"
+    SUITE2P = "suite2p"
 
 
 @dataclass
@@ -27,6 +28,17 @@ class InputFileInfo:
     def path_str(self) -> str:
         """Get path as string."""
         return str(self.path)
+
+
+def is_suite2p_plane(data_path: str | Path) -> bool:
+    """Return whether *data_path* is a direct Suite2p plane directory.
+
+    The cheap file check intentionally happens before raw-file discovery.  Full
+    ``ops.npy`` validation is performed by the pipeline when the input is used.
+    """
+
+    path = Path(data_path)
+    return path.is_dir() and (path / "ops.npy").is_file() and (path / "data.bin").is_file()
 
 
 def detect_input_file(

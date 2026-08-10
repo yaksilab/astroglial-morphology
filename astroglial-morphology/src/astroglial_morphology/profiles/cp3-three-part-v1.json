@@ -1,0 +1,59 @@
+{
+  "name": "cp3-three-part",
+  "version": "1",
+  "combined_flow_role": "complete_cell",
+  "merge": {
+    "processes_overlap_threshold": 0.15,
+    "cell_body_overlap_threshold": 0.35
+  },
+  "roles": {
+    "complete_cell": {
+      "asset": "cp3_complete_cell_scratch_seed42",
+      "effective_diameter_um": 7.89,
+      "cellpose": {
+        "flow_threshold": 0.5,
+        "cellprob_threshold": 0.4,
+        "augment": true,
+        "resample": true,
+        "min_size": 15,
+        "normalize": {
+          "percentile": [1.0, 99.0],
+          "normalize": true,
+          "norm3D": true
+        }
+      }
+    },
+    "processes": {
+      "asset": "cp3_processes_scratch_seed42",
+      "effective_diameter_um": 7.89,
+      "cellpose": {
+        "flow_threshold": 0.5,
+        "cellprob_threshold": 0.4,
+        "augment": true,
+        "resample": true,
+        "min_size": 15,
+        "normalize": {
+          "percentile": [1.0, 99.0],
+          "normalize": true,
+          "norm3D": true
+        }
+      }
+    },
+    "cell_body": {
+      "asset": "cp3_cell_body_scratch_seed42",
+      "effective_diameter_um": 6.0,
+      "cellpose": {
+        "flow_threshold": 0.5,
+        "cellprob_threshold": 0.4,
+        "augment": true,
+        "resample": true,
+        "min_size": 15,
+        "normalize": {
+          "percentile": [1.0, 99.0],
+          "normalize": true,
+          "norm3D": true
+        }
+      }
+    }
+  }
+}
