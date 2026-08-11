@@ -19,10 +19,16 @@ logger = get_logger(__name__)
 class BinaryDataProcessor:
     """
     A class to handle loading and processing of Suite2p binary data files.
-    Currently supports single plane, single channel data only.
+    Currently supports single plane data with one or two channels.
     """
 
-    def __init__(self, suite2p_folder_path: str, plane_idx: int = 0):
+    def __init__(
+        self,
+        suite2p_folder_path: str,
+        plane_idx: int = 0,
+        channel_idx: int = 0,
+        direct_plane_path: Optional[str | Path] = None,
+    ):
         """
         Initialize the binary data processor.
 
@@ -32,15 +38,27 @@ class BinaryDataProcessor:
         """
         self.suite2p_folder_path = Path(suite2p_folder_path)
         self.plane_idx = plane_idx
+        self.channel_idx = channel_idx
 
         # Construct paths to plane-specific files
-        self.plane_path = self.suite2p_folder_path / f"plane{plane_idx}"
+        self.plane_path = (
+            Path(direct_plane_path)
+            if direct_plane_path is not None
+            else self.suite2p_folder_path / f"plane{plane_idx}"
+        )
         self.ops_path = self.plane_path / "ops.npy"
-        self.bin_file_path = self.plane_path / "data.bin"
+        self.bin_file_path = self._get_channel_binary_path()
 
         self.ops: Optional[Dict[str, Any]] = None
         self.data: Optional[BinaryFile] = None
         self._load_data()
+
+    def _get_channel_binary_path(self) -> Path:
+        if self.channel_idx == 0:
+            return self.plane_path / "data.bin"
+        if self.channel_idx == 1:
+            return self.plane_path / "data_chan2.bin"
+        raise ValueError("Only channel indexes 0 and 1 are supported")
 
     def _load_data(self) -> None:
         """Load the ops metadata and binary data."""
@@ -65,13 +83,11 @@ class BinaryDataProcessor:
             Ly = self.ops["Ly"]
             nframes = self.ops["nframes"]
 
-            # Check for multiple channels and warn if found
             nchannels = self.ops.get("nchannels", 1)
-            if nchannels > 1:
-                logger.warning(
-                    f"Multiple channels detected (nchannels={nchannels}). "
-                    f"Only single channel data is currently supported. "
-                    f"Channel 0 will be used, other channels will be ignored."
+            if self.channel_idx >= nchannels:
+                raise ValueError(
+                    f"Channel {self.channel_idx} requested but ops.npy only "
+                    f"contains {nchannels} channel(s)"
                 )
 
             # Check for multiple planes and warn if found
@@ -85,11 +101,23 @@ class BinaryDataProcessor:
             self.data = BinaryFile(
                 Ly=Ly, Lx=Lx, filename=str(self.bin_file_path), n_frames=nframes
             )
-            logger.info(f"Loaded binary data from {self.bin_file_path}")
+            logger.info(
+                "Loaded binary data for channel %d from %s",
+                self.channel_idx,
+                self.bin_file_path,
+            )
 
         except Exception as e:
             logger.error(f"Error loading data: {e}")
             raise
+
+    def close(self) -> None:
+        """Close underlying binary file handles when supported."""
+        if self.data is None:
+            return
+        close_fn = getattr(self.data, "close", None)
+        if callable(close_fn):
+            close_fn()
 
     def get_mean_image(self, batch_size: Optional[int] = None) -> np.ndarray:
         """
@@ -103,7 +131,8 @@ class BinaryDataProcessor:
         Returns:
             Mean image as numpy array
         """
-        if self.ops is None or "meanImg" not in self.ops:
+        mean_key = "meanImg" if self.channel_idx == 0 else "meanImg_chan2"
+        if self.ops is None or self.ops.get(mean_key) is None:
             logger.warning("No meanImg found in ops, calculating from data")
             if self.data is None or self.ops is None:
                 raise RuntimeError("No data loaded")
@@ -133,7 +162,7 @@ class BinaryDataProcessor:
 
             return mean_image / nframes
 
-        return self.ops["meanImg"]
+        return self.ops[mean_key]
 
     def get_max_projection(self, batch_size: Optional[int] = None) -> np.ndarray:
         """
@@ -319,6 +348,7 @@ class BinaryDataProcessor:
             "Ly": self.ops["Ly"],
             "nframes": self.ops["nframes"],
             "nchannels": self.ops.get("nchannels", 1),
+            "channel_idx": self.channel_idx,
             "nplanes": self.ops.get("nplanes", 1),
             "plane_idx": self.plane_idx,
             "ops_path": str(self.ops_path),
@@ -328,7 +358,10 @@ class BinaryDataProcessor:
 
 
 def load_binary_data(
-    suite2p_folder_path: str, plane_idx: int = 0
+    suite2p_folder_path: str,
+    plane_idx: int = 0,
+    channel_idx: int = 0,
+    direct_plane_path: Optional[str | Path] = None,
 ) -> BinaryDataProcessor:
     """
     Convenience function to load binary data.
@@ -340,7 +373,12 @@ def load_binary_data(
     Returns:
         BinaryDataProcessor instance
     """
-    return BinaryDataProcessor(suite2p_folder_path, plane_idx)
+    return BinaryDataProcessor(
+        suite2p_folder_path,
+        plane_idx,
+        channel_idx,
+        direct_plane_path=direct_plane_path,
+    )
 
 
 def create_projections(
@@ -349,6 +387,7 @@ def create_projections(
     output_dir: Optional[str] = None,
     save_images: bool = True,
     batch_size: Optional[int] = None,
+    direct_plane_path: Optional[str | Path] = None,
 ) -> Dict[str, np.ndarray]:
     """
     Create all standard projections and save them as images.
@@ -369,23 +408,83 @@ def create_projections(
         - sum : Sum projection image
 
     """
-    processor = load_binary_data(suite2p_folder_path, plane_idx)
+    first_processor = load_binary_data(
+        suite2p_folder_path,
+        plane_idx,
+        channel_idx=0,
+        direct_plane_path=direct_plane_path,
+    )
+    nchannels = int(first_processor.ops.get("nchannels", 1)) if first_processor.ops else 1
 
-    projections = {
-        "mean": processor.get_mean_image(batch_size=batch_size),
-        "max_projection": processor.get_max_projection(batch_size=batch_size),
-    }
+    processors = [first_processor]
+    projections: Dict[str, np.ndarray] = {}
+    try:
+        if nchannels < 1 or nchannels > 2:
+            raise ValueError(
+                "Projection creation supports only one or two channels; "
+                f"ops.npy declares {nchannels}"
+            )
+        if nchannels > 1:
+            processors.append(
+                load_binary_data(
+                    suite2p_folder_path,
+                    plane_idx,
+                    channel_idx=1,
+                    direct_plane_path=direct_plane_path,
+                )
+            )
 
-    if save_images:
-        if output_dir is None:
-            output_dir_obj = processor.plane_path
-        else:
-            output_dir_obj = Path(output_dir)
+        for channel_idx, processor in enumerate(processors):
+            mean = processor.get_mean_image(batch_size=batch_size)
+            max_projection = processor.get_max_projection(batch_size=batch_size)
+            projections[f"mean_ch{channel_idx}"] = mean
+            projections[f"max_projection_ch{channel_idx}"] = max_projection
+            if channel_idx == 0:
+                projections["mean"] = mean
+                projections["max_projection"] = max_projection
 
-        output_dir_obj.mkdir(parents=True, exist_ok=True)
+        if save_images:
+            if output_dir is None:
+                output_dir_obj = first_processor.plane_path
+            else:
+                output_dir_obj = Path(output_dir)
 
-        for name, image in projections.items():
-            output_path = output_dir_obj / f"{name}_image.png"
-            processor.save_image(image, str(output_path))
+            output_dir_obj.mkdir(parents=True, exist_ok=True)
+
+            for name, image in projections.items():
+                if nchannels > 1 or name in {"mean", "max_projection"}:
+                    output_path = output_dir_obj / f"{name}_image.png"
+                    first_processor.save_image(image, str(output_path))
+    finally:
+        for processor in processors:
+            processor.close()
 
     return projections
+
+
+def create_projections_from_plane_path(
+    plane_path: str | Path,
+    output_dir: Optional[str] = None,
+    save_images: bool = True,
+    batch_size: Optional[int] = None,
+) -> Dict[str, np.ndarray]:
+    """Create projections from a direct Suite2p ``plane0`` directory.
+
+    This is a small adapter around :func:`create_projections` that preserves
+    its public API while allowing callers with an already-registered plane to
+    avoid reconstructing a ``suite2p/plane0`` parent layout.
+    """
+
+    plane = Path(plane_path)
+    if not (plane / "ops.npy").is_file() or not (plane / "data.bin").is_file():
+        raise FileNotFoundError(
+            f"Suite2p plane must contain ops.npy and data.bin: {plane}"
+        )
+    return create_projections(
+        str(plane.parent),
+        plane_idx=0,
+        output_dir=output_dir or str(plane),
+        save_images=save_images,
+        batch_size=batch_size,
+        direct_plane_path=plane,
+    )

@@ -2,6 +2,7 @@
 
 import logging
 import re
+from typing import Optional
 import tifffile
 
 logger = logging.getLogger(__name__)
@@ -16,13 +17,17 @@ class Metadata:
         nchannels: int,
         nplanes: int,
         finterval: float,
-        pix_resolution: float,
+        pix_resolution: Optional[float],
+        series_name: Optional[str] = None,
+        series_index: Optional[int] = None,
     ):
         self.nframes = nframes
         self.nchannels = nchannels
         self.nplanes = nplanes
         self.finterval = finterval
         self.pix_resolution = pix_resolution
+        self.series_name = series_name
+        self.series_index = series_index
 
     @property
     def fs(self) -> float:

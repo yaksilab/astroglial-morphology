@@ -1,0 +1,22 @@
+{
+  "assets": {
+    "cp3_complete_cell_scratch_seed42": {
+      "version": "cp3-three-part-v1",
+      "filename": "yaksi_complete_cells_cellpose3_scratch_seed42",
+      "url": "https://github.com/yaksilab/astroglial-morphology/releases/download/cp3-three-part-v1/yaksi_complete_cells_cellpose3_scratch_seed42",
+      "sha256": "b85d6c284e607a49362285862fe739a9eaf1358cc1c8de15270308acc484d931"
+    },
+    "cp3_processes_scratch_seed42": {
+      "version": "cp3-three-part-v1",
+      "filename": "yaksi_tails_cellpose3_scratch_seed42",
+      "url": "https://github.com/yaksilab/astroglial-morphology/releases/download/cp3-three-part-v1/yaksi_tails_cellpose3_scratch_seed42",
+      "sha256": "e448cc667452aa6c308117843ab3b486bfba601facc4058ea167c7d74be12d1b"
+    },
+    "cp3_cell_body_scratch_seed42": {
+      "version": "cp3-three-part-v1",
+      "filename": "yaksi_body_cellpose3_scratch_seed42",
+      "url": "https://github.com/yaksilab/astroglial-morphology/releases/download/cp3-three-part-v1/yaksi_body_cellpose3_scratch_seed42",
+      "sha256": "7141593e1f9345b1312c1369debbf91f45096e297c812ee722bf0c2ed5440f97"
+    }
+  }
+}

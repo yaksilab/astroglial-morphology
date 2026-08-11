@@ -14,6 +14,11 @@ from astroglial_morphology.correspondence import (
     VALID_SUBSEGMENTATION_MODES,
     SUBSEGMENTATION_MODE_EQUAL_LENGTH,
 )
+from astroglial_morphology.ensemble import (
+    DEFAULT_PROFILE_NAME,
+    ModelAssetResolver,
+    load_ensemble_profile,
+)
 from astroglial_morphology.pipeline import Pipeline
 
 
@@ -42,7 +47,8 @@ Examples:
     )
     parser.add_argument(
         "data_path",
-        help="Path to directory containing input files (.tif or .lif)",
+        nargs="?",
+        help="Path to raw LIF/TIFF data or an existing Suite2p plane0 directory",
     )
     parser.add_argument(
         "--reg-tif",
@@ -54,6 +60,39 @@ Examples:
         "--model",
         help="Path to custom Cellpose model (optional)",
         default=None,
+    )
+    parser.add_argument(
+        "--segmentation-mode",
+        choices=["single", "ensemble"],
+        default="single",
+        help="Segmentation strategy; single preserves the existing pipeline default",
+    )
+    parser.add_argument(
+        "--ensemble-profile",
+        default=DEFAULT_PROFILE_NAME,
+        help="Packaged ensemble profile to use",
+    )
+    parser.add_argument(
+        "--ensemble-config",
+        default=None,
+        help="Path to a complete custom three-role ensemble JSON profile",
+    )
+    parser.add_argument(
+        "--pixels-per-micron",
+        type=float,
+        default=None,
+        help="Physical calibration override, in pixels per micron",
+    )
+    parser.add_argument(
+        "--model-cache-dir",
+        default=None,
+        help="Directory used to cache verified ensemble model assets",
+    )
+    parser.add_argument(
+        "--download-models",
+        action="store_true",
+        default=False,
+        help="Download and verify ensemble models, then exit without processing data",
     )
     parser.add_argument(
         "--gpu",
@@ -74,6 +113,25 @@ Examples:
         default=False,
     )
     parser.add_argument(
+        "--alignment-only",
+        action="store_true",
+        help="Stop after registration and projection creation",
+        default=False,
+    )
+    parser.add_argument(
+        "--registration-channel",
+        type=int,
+        choices=[0, 1],
+        default=0,
+        help="Zero-based channel used to calculate registration shifts",
+    )
+    parser.add_argument(
+        "--regmetrics",
+        action="store_true",
+        help="Enable Suite2p registration metrics (can require substantial memory)",
+        default=False,
+    )
+    parser.add_argument(
         "--manual-correction",
         action="store_true",
         help="Load manually corrected masks instead of running segmentation",
@@ -83,7 +141,7 @@ Examples:
         "--export-correspondence",
         action="store_true",
         help="Generate correspondence matrix, subsegmented masks, and trace exports",
-        default=True,
+        default=False,
     )
     parser.add_argument(
         "--segment-length",
@@ -109,11 +167,44 @@ Examples:
         default="mean",
         help="Projection image to segment on: mean or max_projection",
     )
+    parser.add_argument(
+        "--segmentation-channel",
+        choices=["both", "0", "1"],
+        default="both",
+        help="Channel mode to segment: both, 0, or 1",
+    )
+    parser.add_argument(
+        "--trace-channels",
+        default=None,
+        help=(
+            "Comma-separated zero-based channels to export traces for, e.g. 0 or 0,1 "
+            "(required for multi-channel correspondence export)"
+        ),
+    )
 
     args = parser.parse_args()
 
     setup_logging()
     logger = get_logger(__name__)
+
+    if args.download_models:
+        try:
+            profile, assets = load_ensemble_profile(
+                profile_name=args.ensemble_profile,
+                config_path=args.ensemble_config,
+            )
+            downloaded = ModelAssetResolver(assets, args.model_cache_dir).prefetch(profile)
+            for role, path in downloaded.items():
+                logger.info("Verified %s model: %s", role, path)
+            return
+        except Exception as e:
+            logger.exception("Model prefetch failed: %s", e)
+            sys.exit(1)
+
+    if args.data_path is None:
+        parser.error("data_path is required unless --download-models is used")
+    if args.segmentation_mode == "ensemble" and args.model is not None:
+        parser.error("--model applies to single-model mode; use --ensemble-config for ensemble models")
 
     # Validate data path
     data_path = Path(args.data_path)
@@ -131,6 +222,11 @@ Examples:
             model_path=args.model,
             use_gpu=args.gpu,
             reg_tif=args.reg_tif,
+            segmentation_mode=args.segmentation_mode,
+            ensemble_profile=args.ensemble_profile,
+            ensemble_config=args.ensemble_config,
+            pixels_per_micron=args.pixels_per_micron,
+            model_cache_dir=args.model_cache_dir,
         )
 
         results = pipeline.run(
@@ -142,6 +238,11 @@ Examples:
             correspondence_delta_x=args.correspondence_delta_x,
             correspondence_subsegmentation_mode=args.subsegmentation_mode,
             segmentation_projection=args.segmentation_image,
+            segmentation_channel=args.segmentation_channel,
+            registration_channel=args.registration_channel,
+            trace_channels=args.trace_channels,
+            do_regmetrics=args.regmetrics,
+            alignment_only=args.alignment_only,
         )
 
         logger.info("Pipeline completed successfully")
@@ -153,11 +254,20 @@ Examples:
                 corr_outputs["correspondence_matrix_path"],
                 corr_outputs["correspondence_matrix_mat_path"],
             )
-            logger.info(
-                "Trace matrix: %s (npy), %s (mat)",
-                corr_outputs["trace_matrix_path"],
-                corr_outputs["trace_matrix_mat_path"],
-            )
+            trace_paths = corr_outputs.get("trace_matrix_paths")
+            trace_mat_paths = corr_outputs.get("trace_matrix_mat_paths")
+            if trace_paths and trace_mat_paths:
+                logger.info(
+                    "Trace matrices: %s (npy), %s (mat)",
+                    trace_paths,
+                    trace_mat_paths,
+                )
+            else:
+                logger.info(
+                    "Trace matrix: %s (npy), %s (mat)",
+                    corr_outputs["trace_matrix_path"],
+                    corr_outputs["trace_matrix_mat_path"],
+                )
 
     except Exception as e:
         logger.exception(f"Pipeline failed with error: {e}")

@@ -32,6 +32,7 @@ class TestPipelineConfig:
         
         assert defaults["maxregshift"] == 0.11
         assert defaults["subpixel"] == 10
+        assert defaults["smooth_sigma_time"] == 1
         assert defaults["nonrigid"] is False
         assert defaults["do_registration"] is True
         assert defaults["roidetect"] is False
@@ -136,6 +137,7 @@ class TestBuildSuite2pOptions:
         # Check defaults are included
         assert options["maxregshift"] == 0.11
         assert options["subpixel"] == 10
+        assert options["smooth_sigma_time"] == 1
         assert options["nonrigid"] is False
         
         # Check batch parameters
