@@ -17,7 +17,7 @@ class Metadata:
         nchannels: int,
         nplanes: int,
         finterval: float,
-        pix_resolution: float,
+        pix_resolution: Optional[float],
         series_name: Optional[str] = None,
         series_index: Optional[int] = None,
     ):

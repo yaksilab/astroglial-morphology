@@ -43,8 +43,15 @@ def get_suite2p_output_dir(
     else:
         base_path = Path(save_path0)
 
-    # Add save_folder subdirectory if specified
+    # ``run_s2p`` serializes the resolved output folder back into ``ops`` as
+    # the scalar string "suite2p".  That string is already the final output
+    # directory relative to ``save_path0``; treating it as a sequence would
+    # incorrectly use its first character ("s") as a path component.
     save_folder = options.get("save_folder", [])
+    if isinstance(save_folder, str):
+        return base_path / save_folder
+
+    # Add a caller-provided save_folder subdirectory if specified.
     if save_folder and len(save_folder) > 0:
         base_path = base_path / save_folder[0]
 

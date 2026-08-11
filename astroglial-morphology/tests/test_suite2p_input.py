@@ -86,3 +86,18 @@ def test_direct_suite2p_ensemble_requires_calibration_before_model_download(tmp_
 
     with pytest.raises(ValueError, match="requires pixels-per-micron calibration"):
         pipeline.segment_cells()
+
+
+def test_direct_suite2p_without_calibration_rejects_physical_downstream_steps(tmp_path):
+    plane = _make_plane(tmp_path)
+    pipeline = Pipeline(str(plane), segmentation_mode="ensemble")
+    pipeline.detect_input()
+    pipeline.load_metadata()
+    pipeline.masks = np.zeros((4, 4), dtype=np.uint16)
+    pipeline.classification = [(1, 1)]
+
+    assert pipeline.metadata.pix_resolution is None
+    with pytest.raises(ValueError, match="morphology classification requires pixels-per-micron"):
+        pipeline.classify_cells()
+    with pytest.raises(ValueError, match="correspondence export requires pixels-per-micron"):
+        pipeline.export_correspondence_data()

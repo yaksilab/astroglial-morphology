@@ -150,6 +150,7 @@ def mock_suite2p_ops():
         "two_step_registration": False,
         "keep_movie_raw": False,
         "smooth_sigma": 1.15,
+        "smooth_sigma_time": 1,
         "maxregshift": 0.11,
         "align_by_chan": 1,
         "subpixel": 10,

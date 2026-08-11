@@ -580,6 +580,48 @@ class TestPipelineRegistrationReuse:
         mock_do_registration.assert_not_called()
         assert data_bin.exists()
 
+    @patch('astroglial_morphology.pipeline.do_registration')
+    @patch('astroglial_morphology.pipeline.Segmentation')
+    def test_enabling_regmetrics_rebuilds_completed_registration(
+        self, mock_seg_class, mock_do_registration, temp_dir
+    ):
+        tiff_file = temp_dir / "test.tif"
+        tiff_file.touch()
+        suite2p_dir = temp_dir / "suite2p"
+        plane_path = suite2p_dir / "plane0"
+        plane_path.mkdir(parents=True)
+        data_bin = plane_path / "data.bin"
+        data_bin.write_bytes(b"registered-channel-0")
+        np.save(
+            plane_path / "ops.npy",
+            {
+                "align_by_chan": 1,
+                "functional_chan": 1,
+                "nchannels": 1,
+                "do_regmetrics": False,
+            },
+            allow_pickle=True,
+        )
+        (suite2p_dir / ".registration_complete").touch()
+
+        pipeline = Pipeline(data_path=str(temp_dir))
+        pipeline.file_info = InputFileInfo(path=tiff_file, format=InputFormat.TIFF)
+        pipeline.metadata = Metadata(
+            nframes=200,
+            nchannels=1,
+            nplanes=1,
+            finterval=1.0,
+            pix_resolution=8.36,
+        )
+        pipeline.do_regmetrics = True
+        pipeline.prepare_data()
+
+        performed = pipeline.run_registration()
+
+        assert performed is True
+        assert mock_do_registration.call_args.args[1]["do_regmetrics"] is True
+        assert not data_bin.exists()
+
 
 class TestPipelineChannelValidation:
     """Tests for the one/two-channel processing limit."""

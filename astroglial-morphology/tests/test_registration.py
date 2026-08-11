@@ -35,6 +35,13 @@ class TestGetSuite2pOutputDir:
         result = get_suite2p_output_dir(data_path, options)
         assert result == Path("/data/experiment/run1/suite2p")
 
+    def test_serialized_suite2p_save_folder_string(self):
+        """Suite2p saves its resolved output directory as a scalar string."""
+        data_path = "/data/experiment"
+        options = {"save_path0": data_path, "save_folder": "suite2p"}
+        result = get_suite2p_output_dir(data_path, options)
+        assert result == Path("/data/experiment/suite2p")
+
     def test_save_folder_with_custom_path(self):
         """Test with save_folder and custom save_path0."""
         data_path = "/data/experiment"

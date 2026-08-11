@@ -61,10 +61,10 @@ def load_suite2p_metadata(
                 f"{binary_path}"
             )
 
-    # Metadata historically requires a pixel-resolution value.  A missing
-    # calibration is represented by Pipeline.pixels_per_micron=None; this
-    # placeholder is only used by legacy non-physical single-model operations.
-    resolution = 1.0 if pixels_per_micron is None else float(pixels_per_micron)
+    # Keep a missing calibration explicit.  Single-model Cellpose inference can
+    # use its learned diameter without calibration, but physical downstream
+    # operations must reject a missing value rather than treating 1.0 as real.
+    resolution = None if pixels_per_micron is None else float(pixels_per_micron)
     return Metadata(
         nframes=frames * channels * planes,
         nchannels=channels,

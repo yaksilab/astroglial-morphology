@@ -56,6 +56,7 @@ class Pipeline:
         "align_by_chan",
         "functional_chan",
         "nchannels",
+        "do_regmetrics",
     )
     _REGISTRATION_INPUT_FILENAMES = (
         "ops.npy",
@@ -740,6 +741,8 @@ class Pipeline:
         if self.metadata is None:
             raise RuntimeError("Metadata is required for classification")
 
+        self._require_direct_suite2p_calibration("morphology classification")
+
         logger.info("Classifying astrocyte morphology...")
 
         diameter = self.config.calculate_diameter(self.metadata.pix_resolution)
@@ -767,6 +770,8 @@ class Pipeline:
             raise RuntimeError(
                 "Must complete segmentation and classification before exporting correspondence"
             )
+
+        self._require_direct_suite2p_calibration("correspondence export")
 
         classification_rows = (
             self.classification[0]
@@ -817,6 +822,15 @@ class Pipeline:
 
         logger.info("Correspondence export completed")
         return outputs
+
+    def _require_direct_suite2p_calibration(self, operation: str) -> None:
+        """Reject physical direct-Suite2p operations without calibration."""
+        if self.input_mode == "suite2p" and self.pixels_per_micron is None:
+            raise ValueError(
+                f"Direct Suite2p {operation} requires pixels-per-micron calibration. "
+                "Add pixels_per_micron/pixel_resolution to pipeline_metadata.json "
+                "or pass --pixels-per-micron."
+            )
 
     @staticmethod
     def _timestamp_from_path(path: Path) -> Optional[str]:

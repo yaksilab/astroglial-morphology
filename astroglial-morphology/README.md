@@ -74,7 +74,9 @@ python -m astroglial_morphology <path-to-suite2p/plane0> --segmentation-mode ens
 For direct Suite2p input, calibration is resolved from `--pixels-per-micron`
 first, then `pixels_per_micron` or legacy `pixel_resolution` in the nearest
 `pipeline_metadata.json`. Ensemble mode requires this calibration; single mode
-can fall back to Cellpose's learned diameter when it is absent.
+can fall back to Cellpose's learned diameter for segmentation when it is absent.
+Morphology classification and correspondence export still require calibration,
+because they convert physical distances to pixels.
 
 
 The package will do motion correction using suite2p and outputs the following projection images from the motion corrected data:
