@@ -134,14 +134,17 @@ Examples:
     parser.add_argument(
         "--manual-correction",
         action="store_true",
-        help="Load manually corrected masks instead of running segmentation",
+        help="Pause after automatic segmentation so masks can be corrected in Cellpose",
         default=False,
     )
     parser.add_argument(
         "--export-correspondence",
-        action="store_true",
-        help="Generate correspondence matrix, subsegmented masks, and trace exports",
-        default=False,
+        action=argparse.BooleanOptionalAction,
+        help=(
+            "Generate correspondence matrix, subsegmented masks, and trace exports "
+            "(default; use --no-export-correspondence to skip)"
+        ),
+        default=True,
     )
     parser.add_argument(
         "--segment-length",
@@ -169,9 +172,9 @@ Examples:
     )
     parser.add_argument(
         "--segmentation-channel",
-        choices=["both", "0", "1"],
-        default="both",
-        help="Channel mode to segment: both, 0, or 1",
+        choices=["auto", "both", "0", "1"],
+        default="auto",
+        help="Channel mode to segment: auto (1 for two-channel data), both, 0, or 1",
     )
     parser.add_argument(
         "--trace-channels",

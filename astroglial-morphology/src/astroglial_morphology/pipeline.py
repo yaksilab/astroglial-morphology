@@ -10,6 +10,7 @@ from datetime import datetime
 from importlib import metadata as importlib_metadata
 from pathlib import Path
 from typing import Optional, Dict, Any, Sequence, Union
+from matplotlib import pyplot as plt
 import numpy as np
 
 from .config import PipelineConfig
@@ -129,12 +130,12 @@ class Pipeline:
         self.neck_distance: Optional[int] = None
         self.segmentation_base_path: Optional[str] = None
         self.registration_channel = 0
-        self.segmentation_channel = "both"
+        self.segmentation_channel = "auto"
         self.trace_channels: Optional[list[int]] = None
         self.segmentation_projection = "mean"
         self.do_regmetrics = False
         self.manual_correction = False
-        self.export_correspondence = False
+        self.export_correspondence = True
         self.alignment_only = False
         self.input_mode = "raw"
         self.plane_path: Optional[Path] = None
@@ -196,19 +197,25 @@ class Pipeline:
         self._validate_supported_channel_count()
         self._validate_channel_index(self.registration_channel, "Registration")
 
+        if self.segmentation_channel == "auto":
+            # Channel 1 contains the morphology signal in the standard
+            # two-channel acquisition.  One-channel data continues to use 0.
+            self.segmentation_channel = (
+                "1" if self._available_channel_count() > 1 else "0"
+            )
+
         if self.segmentation_channel not in {"both", "0", "1"}:
             raise ValueError(
-                "segmentation_channel must be one of: both, 0, 1"
+                "segmentation_channel must be one of: auto, both, 0, 1"
             )
         if self.segmentation_channel in {"0", "1"}:
             self._validate_channel_index(int(self.segmentation_channel), "Segmentation")
 
         if export_correspondence:
             if self._available_channel_count() > 1 and self.trace_channels is None:
-                raise ValueError(
-                    "trace_channels must be specified when exporting traces "
-                    "from multi-channel data"
-                )
+                # Keep a no-options two-channel run useful: by default, trace
+                # the same signal chosen automatically for segmentation.
+                self.trace_channels = [int(self.segmentation_channel)]
             if self.trace_channels is None:
                 self.trace_channels = [0]
             for channel in self.trace_channels:
@@ -588,11 +595,48 @@ class Pipeline:
         image = self.projections[self._projection_key(projection_type, channel)]
         return image, f"ch{channel}", {}
 
+    def _save_cellpose_source_image(
+        self, image: np.ndarray, save_path: str
+    ) -> Path:
+        """Save the exact segmentation view beside its Cellpose masks.
+
+        Cellpose 3 stores a filename reference in ``*_seg.npy`` rather than
+        embedding the image.  Giving the GUI a same-prefix image prevents it
+        from opening a legacy projection or failing to find an image entirely.
+        """
+        image_path = Path(f"{save_path}.png")
+        image_path.parent.mkdir(parents=True, exist_ok=True)
+        display_image = np.asarray(image)
+        if display_image.ndim == 3 and display_image.shape[-1] == 2:
+            # PNG has no ordinary two-colour-channel mode.  Preserve both
+            # channels as a red/green display image for Cellpose's GUI.
+            rgb = np.zeros((*display_image.shape[:2], 3), dtype=display_image.dtype)
+            rgb[..., :2] = display_image
+            display_image = rgb
+        plt.imsave(
+            image_path,
+            display_image,
+            cmap="gray" if display_image.ndim == 2 else None,
+        )
+        logger.info("Saved Cellpose source image to %s", image_path)
+        return image_path
+
+    @staticmethod
+    def _link_cellpose_mask_to_source_image(mask_path: Path, image_path: Path) -> None:
+        """Point a Cellpose ``*_seg.npy`` file at its paired source image."""
+        if not mask_path.is_file():
+            # Allows mocked segmenters in callers and tests; real Cellpose
+            # always creates this file before manual correction is offered.
+            return
+        payload = np.load(mask_path, allow_pickle=True).item()
+        payload["filename"] = str(image_path)
+        np.save(mask_path, payload)
+
     def segment_cells(
         self,
         interactive_correction: bool = False,
         projection_type: str = "mean",
-        segmentation_channel: str = "both",
+        segmentation_channel: str = "auto",
     ) -> np.ndarray:
         """Segment cells using Cellpose.
 
@@ -600,13 +644,19 @@ class Pipeline:
             interactive_correction: If True, prompts user to manually correct masks
                                    in Cellpose before continuing
             projection_type: Projection image to segment on ("mean" or "max_projection")
-            segmentation_channel: "both", "0", or "1"
+            segmentation_channel: "auto", "both", "0", or "1"
         """
         if self.projections is None:
             raise RuntimeError("Must create projections before segmentation")
 
         if self.metadata is None:
             raise RuntimeError("Metadata is required for segmentation")
+
+        if segmentation_channel == "auto":
+            segmentation_channel = (
+                "1" if self._available_channel_count() > 1 else "0"
+            )
+        self.segmentation_channel = segmentation_channel
 
         segmentation_image, channel_suffix, segmentation_kwargs = (
             self._build_segmentation_image(projection_type, segmentation_channel)
@@ -622,6 +672,9 @@ class Pipeline:
         save_path = str(self._plane_path() / save_name)
         self.segmentation_base_path = save_path
         self.ensemble_result = None
+        source_image_path = self._save_cellpose_source_image(
+            segmentation_image, save_path
+        )
 
         if self.segmentation_mode == "ensemble":
             if self.pixels_per_micron is None:
@@ -664,6 +717,10 @@ class Pipeline:
                 diameter=diameter,
                 **segmentation_kwargs,
             )
+
+        self._link_cellpose_mask_to_source_image(
+            Path(f"{save_path}_seg.npy"), source_image_path
+        )
 
         labels = np.unique(self.masks)
         labels = labels[labels != 0]
@@ -1121,12 +1178,12 @@ class Pipeline:
         skip_registration: bool = False,
         force_registration: bool = False,
         manual_correction: bool = False,
-        export_correspondence: bool = False,
+        export_correspondence: bool = True,
         correspondence_segment_length: int = 100,
         correspondence_delta_x: float = 20.0,
         correspondence_subsegmentation_mode: str = SUBSEGMENTATION_MODE_EQUAL_LENGTH,
         segmentation_projection: str = "mean",
-        segmentation_channel: str = "both",
+        segmentation_channel: str = "auto",
         registration_channel: int = 0,
         trace_channels: Optional[Union[str, Sequence[int]]] = None,
         do_regmetrics: bool = False,
@@ -1143,7 +1200,7 @@ class Pipeline:
             correspondence_segment_length: Segment length in pixels for subsegmentation
             correspondence_delta_x: X-axis grouping distance for correspondence alignment
             correspondence_subsegmentation_mode: Strategy for subsegmenting cells
-            segmentation_channel: Channel mode for Cellpose input ("both", "0", or "1")
+            segmentation_channel: Channel mode for Cellpose input ("auto", "both", "0", or "1")
             registration_channel: Zero-based channel used to calculate registration shifts
             trace_channels: Zero-based channels to export traces for
             do_regmetrics: Whether Suite2p should compute optional registration metrics

@@ -88,7 +88,7 @@ The package will do motion correction using suite2p and outputs the following pr
 
 ### Exporting Correspondence & Trace Data
 
-To reproduce the correspondence matrix and trace exports from the original `astroglialAnalysis` workflow, run the CLI with `--export-correspondence`. Optional knobs let you choose the sub-segmentation length and the x-axis grouping distance used during alignment:
+Correspondence matrix and trace exports are produced by default. Use `--no-export-correspondence` only when you want to skip them. Optional knobs let you choose the sub-segmentation length and the x-axis grouping distance used during alignment:
 
 ```shell
 python -m astroglial_morphology <data-dir> --export-correspondence --segment-length 10 --correspondence-delta-x 20
