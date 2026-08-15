@@ -2,3 +2,8 @@ astroglial-morphology/data/training/
 
 
 __pycache__/
+
+astroglial-morphology/data/augmented4
+
+/training
+.coverage

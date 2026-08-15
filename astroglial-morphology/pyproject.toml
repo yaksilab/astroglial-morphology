@@ -2,11 +2,13 @@
 name = "astroglial-morphology"
 version = "0.2.0"
 description = ""
-authors = [
-    {name = "Javid Rezai",email = "javid.af@outlook.com"}
-]
-readme = "README.md"
+authors = [{ name = "Javid Rezai", email = "javid.af@outlook.com" }]
 requires-python = ">=3.10,<3.11"
+readme = "README.md"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+]
 dependencies = [
     "scikit-image (>=0.24,<0.25)",
     "pillow (>=11.3.0,<12.0.0)",
@@ -15,20 +17,32 @@ dependencies = [
     "matplotlib (>=3.9.4,<4.0.0)",
     "cellpose (>=3.1.1.2,<4.0.0.0)",
     "suite2p (==0.14.5)",
-    "astroglial-analysis @ git+https://github.com/yaksilab/silver-dollop.git",
+    "astroglial-analysis @ git+https://github.com/yaksilab/silver-dollop.git@v1.0.3",
     "readlif (>=0.6.6,<0.7.0)",
-
 ]
 
-[tool.poetry]
-packages = [{include = "astroglial_morphology", from = "src"}]
-include = [{path = "src/astroglial_morphology/profiles/*.json", format = ["sdist", "wheel"]}]
+[dependency-groups]
+test = [
+    "pytest>=9.0.2,<10",
+    "pytest-cov>=6.0.0,<7",
+    "pytest-mock>=3.14.0,<4",
+]
 
+[tool.hatch.metadata]
+allow-direct-references = true
 
-[tool.poetry.group.test.dependencies]
-pytest = "^9.0.2"
-pytest-cov = "^6.0.0"
-pytest-mock = "^3.14.0"
+[tool.hatch.build.targets.sdist]
+include = ["src/astroglial_morphology"]
+
+[tool.hatch.build.targets.wheel]
+include = ["src/astroglial_morphology"]
+
+[tool.hatch.build.targets.wheel.sources]
+"src/astroglial_morphology" = "astroglial_morphology"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -66,7 +80,3 @@ exclude_lines = [
     "if __name__ == .__main__.:",
     "if TYPE_CHECKING:",
 ]
-
-[build-system]
-requires = ["poetry-core>=2.0.0,<3.0.0"]
-build-backend = "poetry.core.masonry.api"
