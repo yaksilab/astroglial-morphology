@@ -623,6 +623,7 @@ class TestPipelineRegistrationReuse:
                 "align_by_chan": 1,
                 "functional_chan": 1,
                 "nchannels": 1,
+                "do_regmetrics": False,
             },
             allow_pickle=True,
         )
@@ -785,7 +786,7 @@ class TestPipelineRun:
         
         # Run pipeline
         pipeline = Pipeline(data_path=str(temp_dir))
-        results = pipeline.run()
+        results = pipeline.run(export_correspondence=False)
         
         # Verify all steps were called
         mock_detect_file.assert_called_once()

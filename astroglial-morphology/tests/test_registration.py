@@ -87,4 +87,4 @@ class TestGetSuite2pOutputDir:
         data_path = "/data/experiment/"
         result = get_suite2p_output_dir(data_path)
         # Path normalization should handle this
-        assert str(result).rstrip('/') == "/data/experiment/suite2p"
+        assert result == Path("/data/experiment/suite2p")
