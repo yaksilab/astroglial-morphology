@@ -20,51 +20,57 @@ tests/
 
 ## Running Tests
 
+Install the project and its test dependency group once:
+
+```bash
+uv sync --group test
+```
+
 ### Run all tests
 ```bash
-poetry run pytest
+uv run --group test pytest
 ```
 
 ### Run with coverage report
 ```bash
-poetry run pytest --cov=astroglial_morphology --cov-report=html
+uv run --group test pytest --cov=astroglial_morphology --cov-report=html
 ```
 
 ### Run specific test file
 ```bash
-poetry run pytest tests/test_config.py
+uv run --group test pytest tests/test_config.py
 ```
 
 ### Run specific test class
 ```bash
-poetry run pytest tests/test_config.py::TestPipelineConfig
+uv run --group test pytest tests/test_config.py::TestPipelineConfig
 ```
 
 ### Run specific test
 ```bash
-poetry run pytest tests/test_config.py::TestPipelineConfig::test_default_constants
+uv run --group test pytest tests/test_config.py::TestPipelineConfig::test_default_constants
 ```
 
 ### Run tests with specific marker
 ```bash
 # Run only unit tests
-poetry run pytest -m unit
+uv run --group test pytest -m unit
 
 # Skip slow tests
-poetry run pytest -m "not slow"
+uv run --group test pytest -m "not slow"
 
 # Run only integration tests
-poetry run pytest -m integration
+uv run --group test pytest -m integration
 ```
 
 ### Run tests in verbose mode
 ```bash
-poetry run pytest -v
+uv run --group test pytest -v
 ```
 
 ### Run tests and stop at first failure
 ```bash
-poetry run pytest -x
+uv run --group test pytest -x
 ```
 
 ## Test Categories
@@ -133,15 +139,15 @@ Tests should be run automatically on:
 ## Troubleshooting
 
 ### Import errors
-Make sure the package is installed with Poetry:
+Make sure the project environment is synchronized:
 ```bash
-poetry install
+uv sync
 ```
 
 ### Missing dependencies
 Install test dependencies:
 ```bash
-poetry install --with test
+uv sync --group test
 ```
 
 ### Tests using real data fail
