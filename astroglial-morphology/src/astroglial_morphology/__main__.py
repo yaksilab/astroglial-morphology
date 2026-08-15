@@ -181,7 +181,7 @@ Examples:
         default=None,
         help=(
             "Comma-separated zero-based channels to export traces for, e.g. 0 or 0,1 "
-            "(required for multi-channel correspondence export)"
+            "(the first selected channel is the Suite2p GUI primary trace)"
         ),
     )
 

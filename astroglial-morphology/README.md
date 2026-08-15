@@ -94,6 +94,6 @@ Correspondence matrix and trace exports are produced by default. Use `--no-expor
 python -m astroglial_morphology <data-dir> --export-correspondence --segment-length 10 --correspondence-delta-x 20
 ```
 
-This command creates `subsegmented_masks_seg.npy`, `correspondence_matrix.(npy|mat)`, and `trace_matrix.(npy|mat)` inside your data directory while also extracting Suite2p traces for the new mask set.
+This command creates `subsegmented_masks_seg.npy`, `correspondence_matrix.(npy|mat)`, and `trace_matrix.(npy|mat)` inside your data directory while also extracting Suite2p traces for the new mask set. The `cellpose_suite2p_output` folder is directly loadable in the Suite2p GUI: it contains `stat.npy`, `ops.npy`, `iscell.npy`, `F.npy`, `Fneu.npy`, and `spks.npy`. For two-channel data, the first `--trace-channels` selection is the GUI primary trace; the other channel is retained as `F_chan2.npy` and `Fneu_chan2.npy`.
 
 Use `--subsegmentation-mode compartments` to split each aligned process into four biologically-inspired regions (soma, middle-near-soma, middle-near-distal, distal). In this mode every subsegment receives a class label 1–4 in addition to the original upper/lower class, while the default `equal_length` mode keeps the previous fixed-pixel segmentation that is controlled by `--segment-length`.

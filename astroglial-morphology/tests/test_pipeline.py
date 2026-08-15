@@ -139,6 +139,36 @@ class TestPipelineCreateProjections:
             assert "std" in projections
             assert "sum" in projections
 
+    @patch('astroglial_morphology.pipeline.create_projections')
+    def test_create_projections_persists_suite2p_gui_mean_images(
+        self, mock_create_projections, temp_dir, sample_metadata
+    ):
+        """Projection generation keeps the GUI images in the plane ops file."""
+        mean_ch0 = np.full((4, 5), 1.0, dtype=np.float32)
+        mean_ch1 = np.full((4, 5), 2.0, dtype=np.float32)
+        mock_create_projections.return_value = {
+            "mean": mean_ch0,
+            "mean_ch0": mean_ch0,
+            "mean_ch1": mean_ch1,
+        }
+        plane = temp_dir / "suite2p" / "plane0"
+        plane.mkdir(parents=True)
+        np.save(
+            plane / "ops.npy",
+            {"Ly": 4, "Lx": 5, "nframes": 1, "nchannels": 2, "fs": 1.0},
+            allow_pickle=True,
+        )
+
+        with patch('astroglial_morphology.pipeline.Segmentation'):
+            pipeline = Pipeline(data_path=str(temp_dir))
+            pipeline.metadata = sample_metadata
+            pipeline.suite2p_options = {"batch_size": 500, "nchannels": 2}
+            pipeline.create_projections()
+
+        ops = np.load(plane / "ops.npy", allow_pickle=True).item()
+        np.testing.assert_array_equal(ops["meanImg"], mean_ch0)
+        np.testing.assert_array_equal(ops["meanImg_chan2"], mean_ch1)
+
 
 class TestPipelineSegmentCells:
     """Tests for Pipeline.segment_cells method."""
@@ -842,6 +872,28 @@ class TestPipelineRun:
 
         assert pipeline.segmentation_channel == "1"
         assert pipeline.trace_channels == [1]
+
+    @patch('astroglial_morphology.pipeline.Segmentation')
+    def test_two_channel_both_segmentation_defaults_to_both_trace_channels(
+        self,
+        mock_seg_class,
+        temp_dir,
+    ):
+        """A two-channel Cellpose view exports both source traces by default."""
+        pipeline = Pipeline(data_path=str(temp_dir))
+        pipeline.metadata = Metadata(
+            nframes=200,
+            nchannels=2,
+            nplanes=1,
+            finterval=1.0,
+            pix_resolution=8.36,
+        )
+        pipeline.suite2p_options = {"nchannels": 2}
+        pipeline.segmentation_channel = "both"
+
+        pipeline._validate_run_channels(export_correspondence=True)
+
+        assert pipeline.trace_channels == [0, 1]
 
     @patch('astroglial_morphology.pipeline.detect_input_file')
     @patch('astroglial_morphology.pipeline.load_metadata')

@@ -214,8 +214,14 @@ class Pipeline:
         if export_correspondence:
             if self._available_channel_count() > 1 and self.trace_channels is None:
                 # Keep a no-options two-channel run useful: by default, trace
-                # the same signal chosen automatically for segmentation.
-                self.trace_channels = [int(self.segmentation_channel)]
+                # the same signal chosen automatically for segmentation.  A
+                # two-channel Cellpose view has no single matching trace, so
+                # export both channels in their stable source order instead.
+                self.trace_channels = (
+                    [0, 1]
+                    if self.segmentation_channel == "both"
+                    else [int(self.segmentation_channel)]
+                )
             if self.trace_channels is None:
                 self.trace_channels = [0]
             for channel in self.trace_channels:
@@ -560,8 +566,37 @@ class Pipeline:
             suite2p_path = os.path.join(self.data_path, "suite2p")
             self.projections = create_projections(suite2p_path, batch_size=batch_size)
 
+        self._persist_projection_images_to_ops()
         logger.info("Projections created")
         return self.projections
+
+    def _persist_projection_images_to_ops(self) -> None:
+        """Keep Suite2p's display images available for its GUI output contract."""
+        if not self.projections:
+            return
+
+        ops_path = self._plane_path() / "ops.npy"
+        ops = self._load_suite2p_ops(ops_path)
+        if not ops:
+            # Tests and incomplete external folders may not yet have a plane
+            # ops file.  Projection creation itself remains usable, while
+            # correspondence export will later report the missing input.
+            return
+
+        updated = False
+        projection_to_ops_key = {
+            "mean_ch0": "meanImg",
+            "mean_ch1": "meanImg_chan2",
+        }
+        for projection_key, ops_key in projection_to_ops_key.items():
+            image = self.projections.get(projection_key)
+            if image is not None:
+                ops[ops_key] = np.asarray(image)
+                updated = True
+
+        if updated:
+            np.save(ops_path, ops, allow_pickle=True)
+            logger.debug("Updated Suite2p GUI display images in %s", ops_path)
 
     def _projection_key(self, projection_type: str, channel: int) -> str:
         channel_key = f"{projection_type}_ch{channel}"

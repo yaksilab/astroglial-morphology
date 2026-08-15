@@ -298,6 +298,191 @@ def _build_suite2p_stat(masks: np.ndarray, ly: int, lx: int, ops: dict) -> np.nd
     return stat
 
 
+def _validate_suite2p_gui_projection_images(
+    ops: dict,
+    nchannels: int,
+    ly: int,
+    lx: int,
+) -> None:
+    """Verify that the trace output will have usable Suite2p GUI backgrounds."""
+    image_keys = ["meanImg"]
+    if nchannels == 2:
+        image_keys.append("meanImg_chan2")
+
+    invalid = []
+    for key in image_keys:
+        image = ops.get(key)
+        if image is None or np.asarray(image).shape != (ly, lx):
+            invalid.append(key)
+    if invalid:
+        raise ValueError(
+            "Suite2p ops.npy is missing valid GUI projection image(s): "
+            f"{', '.join(invalid)}. Run the pipeline projection step before "
+            "exporting correspondence data."
+        )
+
+
+def _make_gui_compatible_ops(
+    *,
+    ops: dict,
+    output_dir: Path,
+    primary_channel: int,
+    nchannels: int,
+    data_bin: Path,
+    data_chan2_bin: Optional[Path],
+) -> dict:
+    """Create output-local Suite2p metadata for the exported trace folder.
+
+    Suite2p's GUI treats ``F.npy`` as the primary/functional trace.  The
+    pipeline, however, allows a user to select either acquired channel for
+    trace export.  The output ``ops.npy`` therefore describes the first
+    requested trace channel as primary and, for two-channel data, maps the
+    other acquired channel to Suite2p's ``*_chan2`` convention.
+
+    The registered binary files are intentionally referenced in place rather
+    than copied into ``cellpose_suite2p_output``.  They can be tens of
+    gigabytes, while the resulting folder remains directly usable by the
+    Suite2p GUI and its manual ROI tools.
+    """
+    if primary_channel < 0 or primary_channel >= nchannels:
+        raise ValueError(
+            f"Primary trace channel {primary_channel} is out of range for "
+            f"{nchannels} channel(s)"
+        )
+
+    gui_ops = ops.copy()
+    gui_ops.update(
+        {
+            "save_path": str(output_dir),
+            "save_path0": str(output_dir.parent),
+            "ops_path": str(output_dir / "ops.npy"),
+            "nchannels": nchannels,
+            # The primary binary/file slot is always Suite2p channel 1.  It
+            # may represent either original microscope channel after the
+            # channel-specific trace selection above.
+            "functional_chan": 1,
+            "astroglial_source_trace_channel": primary_channel,
+            # These fields are read directly by the legacy GUI.
+            "diameter": gui_ops.get("diameter", 0),
+            "aspect": gui_ops.get("aspect", 1.0),
+        }
+    )
+
+    if nchannels == 1:
+        gui_ops["reg_file"] = str(data_bin)
+        for key in (
+            "reg_file_chan2",
+            "meanImg_chan2",
+            "meanImg_chan2_corrected",
+        ):
+            gui_ops.pop(key, None)
+        return gui_ops
+
+    if data_chan2_bin is None:
+        raise ValueError("Two-channel Suite2p output requires data_chan2.bin")
+
+    companion_channel = 1 - primary_channel
+    primary_binary = data_bin if primary_channel == 0 else data_chan2_bin
+    companion_binary = data_bin if companion_channel == 0 else data_chan2_bin
+    primary_mean_key = "meanImg" if primary_channel == 0 else "meanImg_chan2"
+    companion_mean_key = "meanImg" if companion_channel == 0 else "meanImg_chan2"
+
+    gui_ops["reg_file"] = str(primary_binary)
+    gui_ops["reg_file_chan2"] = str(companion_binary)
+    gui_ops["channel_indices"] = [primary_channel, companion_channel]
+    source_align_channel = int(ops.get("align_by_chan", 1)) - 1
+    gui_ops["align_by_chan"] = 1 if source_align_channel == primary_channel else 2
+    gui_ops["meanImg"] = ops.get(primary_mean_key)
+    gui_ops["meanImg_chan2"] = ops.get(companion_mean_key)
+
+    # ``meanImgE`` is computed only for Suite2p's original primary channel.
+    # Keeping it after swapping a channel-1 trace into the primary slot would
+    # display an image from the wrong channel underneath the Cellpose ROIs.
+    if primary_channel == 1:
+        gui_ops.pop("meanImgE", None)
+        gui_ops.pop("meanImg_chan2_corrected", None)
+        gui_ops.pop("Vcorr", None)
+        gui_ops.pop("max_proj", None)
+
+    return gui_ops
+
+
+def _save_suite2p_gui_output(
+    *,
+    output_dir: Path,
+    ops: dict,
+    stat: np.ndarray,
+    iscell: np.ndarray,
+    channel_traces: dict[int, tuple[np.ndarray, np.ndarray]],
+    channel_spikes: dict[int, np.ndarray],
+    selected_channels: Sequence[int],
+    nchannels: int,
+    data_bin: Path,
+    data_chan2_bin: Optional[Path],
+) -> None:
+    """Write a Cellpose trace export in the Suite2p GUI file layout.
+
+    The Suite2p GUI requires ``stat.npy``, ``ops.npy``, ``iscell.npy``,
+    ``F.npy``, ``Fneu.npy``, and ``spks.npy`` next to one another.  We always
+    write that canonical set, independently of which source channel was
+    selected for trace extraction.  In two-channel data, the remaining source
+    channel is written as ``F_chan2.npy``/``Fneu_chan2.npy`` and gets neutral
+    channel-two labels so Suite2p's editing tools can load it safely.
+    """
+    if not selected_channels:
+        raise ValueError("At least one trace channel is required for GUI export")
+
+    primary_channel = int(selected_channels[0])
+    try:
+        primary_traces, primary_neuropil = channel_traces[primary_channel]
+        primary_spikes = channel_spikes[primary_channel]
+    except KeyError as exc:
+        raise ValueError(
+            f"Missing traces or spikes for selected channel {primary_channel}"
+        ) from exc
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    gui_ops = _make_gui_compatible_ops(
+        ops=ops,
+        output_dir=output_dir,
+        primary_channel=primary_channel,
+        nchannels=nchannels,
+        data_bin=data_bin,
+        data_chan2_bin=data_chan2_bin,
+    )
+
+    np.save(output_dir / "stat.npy", stat)
+    np.save(output_dir / "iscell.npy", iscell)
+    np.save(output_dir / "ops.npy", gui_ops)
+    np.save(output_dir / "F.npy", primary_traces)
+    np.save(output_dir / "Fneu.npy", primary_neuropil)
+    np.save(output_dir / "spks.npy", primary_spikes)
+
+    # Keep the explicit source-channel artifacts used by the pipeline's
+    # correspondence products.  These are supplementary; Suite2p itself
+    # reads the canonical names above.
+    for channel in selected_channels:
+        traces, neuropil = channel_traces[channel]
+        np.save(output_dir / f"F_ch{channel}.npy", traces)
+        np.save(output_dir / f"Fneu_ch{channel}.npy", neuropil)
+        np.save(output_dir / f"spks_ch{channel}.npy", channel_spikes[channel])
+
+    if nchannels == 2:
+        companion_channel = 1 - primary_channel
+        try:
+            companion_traces, companion_neuropil = channel_traces[companion_channel]
+        except KeyError as exc:
+            raise ValueError(
+                f"Missing traces for channel {companion_channel} in two-channel data"
+            ) from exc
+        np.save(output_dir / "F_chan2.npy", companion_traces)
+        np.save(output_dir / "Fneu_chan2.npy", companion_neuropil)
+        # Cellpose ROIs have not been through Suite2p's red-cell classifier.
+        # A neutral label matrix lets the GUI load/edit the second channel
+        # without incorrectly claiming a red-cell classification.
+        np.save(output_dir / "redcell.npy", np.zeros((len(stat), 2), dtype=float))
+
+
 def _extract_suite2p_traces_for_channels(
     *,
     data_path: Path,
@@ -322,6 +507,7 @@ def _extract_suite2p_traces_for_channels(
     ly = int(ops["Ly"])
     lx = int(ops["Lx"])
     nframes = int(ops["nframes"])
+    _validate_suite2p_gui_projection_images(ops, nchannels, ly, lx)
 
     mask_path = data_path / mask_filename
     if not mask_path.exists():
@@ -331,6 +517,8 @@ def _extract_suite2p_traces_for_channels(
 
     data_bin = data_path / "data.bin"
     data_chan2_bin = data_path / "data_chan2.bin"
+    if not data_bin.exists():
+        raise FileNotFoundError(f"Suite2p binary not found: {data_bin}")
     if nchannels > 1 and not data_chan2_bin.exists():
         raise FileNotFoundError(
             f"ops.npy declares {nchannels} channels but {data_chan2_bin} is missing"
@@ -350,24 +538,18 @@ def _extract_suite2p_traces_for_channels(
         )
 
     iscell = classify(stat=stat_after_extraction, classfile=builtin_classfile)
-    np.save(output_dir / "stat.npy", stat_after_extraction)
-    np.save(output_dir / "iscell.npy", iscell)
-    np.save(output_dir / "ops.npy", ops)
+    channel_traces: dict[int, tuple[np.ndarray, np.ndarray]] = {
+        0: (f_ch0, fneu_ch0)
+    }
+    if nchannels == 2:
+        if f_ch1 is None or fneu_ch1 is None:
+            raise RuntimeError("Suite2p did not return channel 1 traces")
+        channel_traces[1] = (f_ch1, fneu_ch1)
 
     extracted: dict[int, np.ndarray] = {}
+    channel_spikes: dict[int, np.ndarray] = {}
     for channel in channels:
-        if channel == 0:
-            traces = f_ch0
-            neuropil = fneu_ch0
-            legacy_prefix = ""
-        elif channel == 1:
-            if f_ch1 is None or fneu_ch1 is None:
-                raise RuntimeError("Suite2p did not return channel 1 traces")
-            traces = f_ch1
-            neuropil = fneu_ch1
-            legacy_prefix = "_chan2"
-        else:  # pragma: no cover - guarded by _normalize_trace_channels
-            raise ValueError(f"Unsupported trace channel: {channel}")
+        traces, neuropil = channel_traces[channel]
 
         dff = traces.copy() - ops["neucoeff"] * neuropil
         dff = preprocess(
@@ -379,19 +561,21 @@ def _extract_suite2p_traces_for_channels(
             prctile_baseline=ops["prctile_baseline"],
         )
         spks = oasis(F=dff, batch_size=ops["batch_size"], tau=ops["tau"], fs=ops["fs"])
-
-        np.save(output_dir / f"F_ch{channel}.npy", traces)
-        np.save(output_dir / f"Fneu_ch{channel}.npy", neuropil)
-        np.save(output_dir / f"spks_ch{channel}.npy", spks)
-        if legacy_prefix == "":
-            np.save(output_dir / "F.npy", traces)
-            np.save(output_dir / "Fneu.npy", neuropil)
-            np.save(output_dir / "spks.npy", spks)
-        else:
-            np.save(output_dir / f"F{legacy_prefix}.npy", traces)
-            np.save(output_dir / f"Fneu{legacy_prefix}.npy", neuropil)
-
+        channel_spikes[channel] = spks
         extracted[channel] = traces
+
+    _save_suite2p_gui_output(
+        output_dir=output_dir,
+        ops=ops,
+        stat=stat_after_extraction,
+        iscell=iscell,
+        channel_traces=channel_traces,
+        channel_spikes=channel_spikes,
+        selected_channels=channels,
+        nchannels=nchannels,
+        data_bin=data_bin,
+        data_chan2_bin=data_chan2_bin if nchannels == 2 else None,
+    )
 
     return output_dir, extracted
 
