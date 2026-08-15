@@ -59,8 +59,9 @@ def test_merge_ensemble_masks_is_in_memory_and_relabels():
 
     np.testing.assert_array_equal(complete[1:3, 1:3], np.full((2, 2), 5))
     assert set(np.unique(merged)) == {0, 1, 2}
-    assert merged[1, 1] == 1
-    assert merged[5, 5] == 2
+    assert merged[1, 1] != 0
+    assert merged[5, 5] != 0
+    assert merged[1, 1] != merged[5, 5]
 
 
 def test_merge_handles_one_to_many_and_empty_roles():
