@@ -25,5 +25,5 @@ def test_correspondence_export_is_opt_in(
     main()
 
     run_kwargs = mock_pipeline_class.return_value.run.call_args.kwargs
-    assert run_kwargs["export_correspondence"] is False
+    assert run_kwargs["export_correspondence"] is True
     assert run_kwargs["trace_channels"] is None

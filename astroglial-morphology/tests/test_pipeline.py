@@ -139,6 +139,36 @@ class TestPipelineCreateProjections:
             assert "std" in projections
             assert "sum" in projections
 
+    @patch('astroglial_morphology.pipeline.create_projections')
+    def test_create_projections_persists_suite2p_gui_mean_images(
+        self, mock_create_projections, temp_dir, sample_metadata
+    ):
+        """Projection generation keeps the GUI images in the plane ops file."""
+        mean_ch0 = np.full((4, 5), 1.0, dtype=np.float32)
+        mean_ch1 = np.full((4, 5), 2.0, dtype=np.float32)
+        mock_create_projections.return_value = {
+            "mean": mean_ch0,
+            "mean_ch0": mean_ch0,
+            "mean_ch1": mean_ch1,
+        }
+        plane = temp_dir / "suite2p" / "plane0"
+        plane.mkdir(parents=True)
+        np.save(
+            plane / "ops.npy",
+            {"Ly": 4, "Lx": 5, "nframes": 1, "nchannels": 2, "fs": 1.0},
+            allow_pickle=True,
+        )
+
+        with patch('astroglial_morphology.pipeline.Segmentation'):
+            pipeline = Pipeline(data_path=str(temp_dir))
+            pipeline.metadata = sample_metadata
+            pipeline.suite2p_options = {"batch_size": 500, "nchannels": 2}
+            pipeline.create_projections()
+
+        ops = np.load(plane / "ops.npy", allow_pickle=True).item()
+        np.testing.assert_array_equal(ops["meanImg"], mean_ch0)
+        np.testing.assert_array_equal(ops["meanImg_chan2"], mean_ch1)
+
 
 class TestPipelineSegmentCells:
     """Tests for Pipeline.segment_cells method."""
@@ -231,6 +261,41 @@ class TestPipelineSegmentCells:
         np.testing.assert_array_equal(img_arg, channel1)
         assert "channel_axis" not in mock_seg.segment_img.call_args.kwargs
         assert save_path.endswith("mean_ch1_image")
+
+    @patch('astroglial_morphology.pipeline.Segmentation')
+    def test_segment_cells_auto_uses_channel_one_for_two_channel_data(
+        self, mock_seg_class, temp_dir
+    ):
+        """Automatic channel selection prefers channel 1 for two-channel data."""
+        mock_seg = Mock()
+        mock_seg.segment_img = Mock(return_value=np.zeros((10, 10), dtype=np.uint16))
+        mock_seg_class.return_value = mock_seg
+
+        channel0 = np.zeros((10, 10), dtype=np.float32)
+        channel1 = np.ones((10, 10), dtype=np.float32)
+        pipeline = Pipeline(data_path=str(temp_dir))
+        pipeline.metadata = Metadata(
+            nframes=10, nchannels=2, nplanes=1, finterval=1.0, pix_resolution=8.36
+        )
+        pipeline.suite2p_options = {"nchannels": 2}
+        pipeline.projections = {"mean_ch0": channel0, "mean_ch1": channel1}
+
+        pipeline.segment_cells()
+
+        np.testing.assert_array_equal(mock_seg.segment_img.call_args.args[0], channel1)
+        assert mock_seg.segment_img.call_args.args[1].endswith("mean_ch1_image")
+        assert (temp_dir / "suite2p" / "plane0" / "mean_ch1_image.png").is_file()
+
+    def test_cellpose_mask_is_linked_to_matching_source_image(self, temp_dir):
+        """Manual correction can reopen the exact image used for segmentation."""
+        image_path = temp_dir / "mean_ch0_image.png"
+        mask_path = temp_dir / "mean_ch0_image_seg.npy"
+        np.save(mask_path, {"masks": np.zeros((2, 2)), "filename": "stale"})
+
+        Pipeline._link_cellpose_mask_to_source_image(mask_path, image_path)
+
+        payload = np.load(mask_path, allow_pickle=True).item()
+        assert payload["filename"] == str(image_path)
 
 
 class TestPipelineClassifyCells:
@@ -785,34 +850,50 @@ class TestPipelineRun:
         options = mock_do_registration.call_args.args[1]
         assert options["align_by_chan"] == 2
 
-    @patch('astroglial_morphology.pipeline.detect_input_file')
-    @patch('astroglial_morphology.pipeline.load_metadata')
     @patch('astroglial_morphology.pipeline.Segmentation')
-    def test_trace_channels_required_for_two_channel_export(
+    def test_two_channel_export_defaults_traces_to_segmentation_channel(
         self,
         mock_seg_class,
-        mock_load_metadata,
-        mock_detect_file,
         temp_dir,
     ):
-        """Test multi-channel correspondence export requires explicit trace channels."""
-        tiff_file = temp_dir / "test.tif"
-        tiff_file.touch()
-        mock_detect_file.return_value = InputFileInfo(
-            path=tiff_file,
-            format=InputFormat.TIFF
-        )
-        mock_load_metadata.return_value = Metadata(
+        """A no-options two-channel run traces the selected morphology channel."""
+        pipeline = Pipeline(data_path=str(temp_dir))
+        pipeline.metadata = Metadata(
             nframes=200,
             nchannels=2,
             nplanes=1,
             finterval=1.0,
             pix_resolution=8.36
         )
+        pipeline.suite2p_options = {"nchannels": 2}
+        pipeline.segmentation_channel = "auto"
 
+        pipeline._validate_run_channels(export_correspondence=True)
+
+        assert pipeline.segmentation_channel == "1"
+        assert pipeline.trace_channels == [1]
+
+    @patch('astroglial_morphology.pipeline.Segmentation')
+    def test_two_channel_both_segmentation_defaults_to_both_trace_channels(
+        self,
+        mock_seg_class,
+        temp_dir,
+    ):
+        """A two-channel Cellpose view exports both source traces by default."""
         pipeline = Pipeline(data_path=str(temp_dir))
-        with pytest.raises(ValueError, match="trace_channels must be specified"):
-            pipeline.run(export_correspondence=True)
+        pipeline.metadata = Metadata(
+            nframes=200,
+            nchannels=2,
+            nplanes=1,
+            finterval=1.0,
+            pix_resolution=8.36,
+        )
+        pipeline.suite2p_options = {"nchannels": 2}
+        pipeline.segmentation_channel = "both"
+
+        pipeline._validate_run_channels(export_correspondence=True)
+
+        assert pipeline.trace_channels == [0, 1]
 
     @patch('astroglial_morphology.pipeline.detect_input_file')
     @patch('astroglial_morphology.pipeline.load_metadata')
