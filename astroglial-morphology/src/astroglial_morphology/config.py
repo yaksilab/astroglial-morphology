@@ -1,46 +1,18 @@
-"""Configuration module for astroglial morphology pipeline."""
+"""Runtime configuration used by the astroglial morphology pipeline."""
+
+from __future__ import annotations
 
 import os
+from copy import deepcopy
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, Any, Optional
+from typing import Any, Dict, Optional
 
 
-class PipelineConfig:
-    """Configuration for the astroglial morphology analysis pipeline."""
+def _suite2p_defaults() -> Dict[str, Any]:
+    """Return a fresh Suite2p default mapping for every config instance."""
 
-    # Model paths
-    DEFAULT_MODEL_DIR = Path(__file__).parent / "models"
-    DEFAULT_MODEL_NAME = "CP3_S4_1_0001_3000"
-
-    @classmethod
-    def get_model_path(cls, model_name: Optional[str] = None) -> str:
-        """
-        Get the path to the Cellpose model.
-
-        Args:
-            model_name: Name of the model directory. If None, uses default.
-
-        Returns:
-            Absolute path to the model directory
-        """
-        if model_name is None:
-            model_name = cls.DEFAULT_MODEL_NAME
-
-        # Check environment variable first
-        env_path = os.environ.get("ASTROGLIAL_MODEL_PATH")
-        if env_path:
-            return env_path
-
-        # Use default path
-        return str(cls.DEFAULT_MODEL_DIR / model_name)
-
-    # Morphology parameters
-    ASTROCYTE_DIAMETER_MICRONS = 31.35  # Average astrocyte diameter in microns
-    DIAMETER_BUFFER_MICRONS = 10.0  # Additional buffer for segmentation
-    NECK_DISTANCE_RATIO = 0.47  # Ratio of diameter for neck distance calculation
-
-    # Suite2p registration parameters
-    SUITE2P_DEFAULTS = {
+    return {
         "save_path0": "",
         "save_folder": [],
         "functional_chan": 1,
@@ -50,68 +22,102 @@ class PipelineConfig:
         "do_registration": True,
         "two_step_registration": False,
         "keep_movie_raw": False,
-        "maxregshift": 0.11,  # 11% of frame dimension
+        "maxregshift": 0.11,
         "align_by_chan": 1,
-        # Stabilize the registration reference for low-SNR recordings without
-        # adding the stronger temporal smoothing used in experimental trials.
         "smooth_sigma_time": 1,
         "do_regmetrics": False,
-        "subpixel": 10,  # High-precision registration
-        "nonrigid": False,  # Rigid registration only
-        "roidetect": False,  # We don't need ROI detection
-        "spikedetect": False,  # We don't need spike detection
+        "subpixel": 10,
+        "nonrigid": False,
+        "roidetect": False,
+        "spikedetect": False,
     }
 
-    # Batch size calculations
-    NIMG_INIT_RATIO = 0.15  # 15% of frames for initialization
-    NIMG_INIT_MAX = 300
-    BATCH_SIZE_RATIO = 1.0  # 100% of frames per batch
-    BATCH_SIZE_MAX = 500
+
+def _segmentation_defaults() -> Dict[str, Any]:
+    """Return the legacy Cellpose defaults without sharing nested mappings."""
+
+    return {
+        "flow_threshold": 0.4,
+        "cellprob_threshold": 0.0,
+        "diameter": None,
+        "augment": True,
+        "resample": True,
+        "min_size": 80,
+        "normalize": {
+            "lowhigh": None,
+            "percentile": [1.0, 99.0],
+            "normalize": True,
+            "norm3D": True,
+            "sharpen_radius": 0,
+            "smooth_radius": 0,
+            "tile_norm_blocksize": 0,
+            "tile_norm_smooth3D": 1,
+            "invert": False,
+        },
+    }
+
+
+@dataclass
+class PipelineConfig:
+    """Typed, instance-backed settings for the analysis pipeline.
+
+    Hydra composes these values from YAML for command-line runs. The class is
+    also deliberately usable by programmatic callers that inject a custom
+    configuration into :class:`~astroglial_morphology.pipeline.Pipeline`.
+    """
+
+    DEFAULT_MODEL_DIR = Path(__file__).parent / "models"
+    DEFAULT_MODEL_NAME = "CP3_S4_1_0001_3000"
+
+    ASTROCYTE_DIAMETER_MICRONS: float = 31.35
+    DIAMETER_BUFFER_MICRONS: float = 10.0
+    NECK_DISTANCE_RATIO: float = 0.47
+
+    SUITE2P_DEFAULTS: Dict[str, Any] = field(default_factory=_suite2p_defaults)
+
+    NIMG_INIT_RATIO: float = 0.15
+    NIMG_INIT_MAX: int = 300
+    BATCH_SIZE_RATIO: float = 1.0
+    BATCH_SIZE_MAX: int = 500
+
+    SEGMENTATION_DEFAULTS: Dict[str, Any] = field(
+        default_factory=_segmentation_defaults
+    )
+    FILE_FORMAT_PRIORITY: list[str] = field(default_factory=lambda: [".lif", ".tif"])
+    LIF_SERIES_INDEX: int = 0
+    LIF_CHANNEL_INDEX: int = 0
+    LIF_PLANE_INDEX: int = 0
 
     @classmethod
+    def get_model_path(cls, model_name: Optional[str] = None) -> str:
+        """Resolve a model path, retaining the legacy environment fallback."""
+
+        env_path = os.environ.get("ASTROGLIAL_MODEL_PATH")
+        if env_path:
+            return env_path
+        return str(cls.DEFAULT_MODEL_DIR / (model_name or cls.DEFAULT_MODEL_NAME))
+
     def calculate_batch_params(
-        cls, frames_per_channel_per_plane: int
+        self, frames_per_channel_per_plane: int
     ) -> Dict[str, int]:
-        """
-        Calculate nimg_init and batch_size based on frame count.
+        """Calculate Suite2p initialization and batch sizes for a frame count."""
 
-        Args:
-            frames_per_channel_per_plane: Number of frames per channel per plane
-
-        Returns:
-            Dictionary with 'nimg_init' and 'batch_size' keys
-        """
         nimg_init = min(
-            int(frames_per_channel_per_plane * cls.NIMG_INIT_RATIO), cls.NIMG_INIT_MAX
+            int(frames_per_channel_per_plane * self.NIMG_INIT_RATIO),
+            self.NIMG_INIT_MAX,
         )
         batch_size = min(
-            int(frames_per_channel_per_plane * cls.BATCH_SIZE_RATIO), cls.BATCH_SIZE_MAX
+            int(frames_per_channel_per_plane * self.BATCH_SIZE_RATIO),
+            self.BATCH_SIZE_MAX,
         )
+        return {"nimg_init": nimg_init, "batch_size": batch_size}
 
-        return {
-            "nimg_init": nimg_init,
-            "batch_size": batch_size,
-        }
-
-    @classmethod
     def build_suite2p_options(
-        cls, metadata: Any, reg_tif: bool = False, **overrides
+        self, metadata: Any, reg_tif: bool = False, **overrides: Any
     ) -> Dict[str, Any]:
-        """
-        Build Suite2p options dictionary.
+        """Build Suite2p options from defaults, metadata, and explicit overrides."""
 
-        Args:
-            metadata: Metadata object with nframes, nchannels, nplanes, fs
-            reg_tif: Whether to save registered TIFF
-            **overrides: Additional options to override defaults
-
-        Returns:
-            Dictionary of Suite2p options
-        """
-        # Start with defaults
-        options = cls.SUITE2P_DEFAULTS.copy()
-
-        # Add metadata-derived parameters
+        options = deepcopy(self.SUITE2P_DEFAULTS)
         options.update(
             {
                 "nplanes": metadata.nplanes,
@@ -120,58 +126,21 @@ class PipelineConfig:
                 "reg_tif": reg_tif,
             }
         )
-
-        # Add batch parameters
-        batch_params = cls.calculate_batch_params(metadata.frames_per_channel_per_plane)
-        options.update(batch_params)
-
-        # Apply any overrides
+        options.update(
+            self.calculate_batch_params(metadata.frames_per_channel_per_plane)
+        )
         options.update(overrides)
-
         return options
 
-    @classmethod
-    def calculate_diameter(cls, pix_resolution: float) -> float:
-        """
-        Calculate segmentation diameter based on pixel resolution.
+    def calculate_diameter(self, pix_resolution: float) -> float:
+        """Calculate segmentation diameter in pixels from physical calibration."""
 
-        Args:
-            pix_resolution: Pixel resolution in microns/pixel
-
-        Returns:
-            Diameter in pixels
-        """
         return (
-            pix_resolution * cls.ASTROCYTE_DIAMETER_MICRONS
-            + cls.DIAMETER_BUFFER_MICRONS
+            pix_resolution * self.ASTROCYTE_DIAMETER_MICRONS
+            + self.DIAMETER_BUFFER_MICRONS
         )
 
-    @classmethod
-    def calculate_neck_distance(cls, diameter: float) -> int:
-        """
-        Calculate neck distance for cell classification.
+    def calculate_neck_distance(self, diameter: float) -> int:
+        """Calculate the morphology-classification neck-distance threshold."""
 
-        Args:
-            diameter: Diameter in pixels
-
-        Returns:
-            Neck distance in pixels
-        """
-        return int(diameter * cls.NECK_DISTANCE_RATIO)
-
-    # Segmentation parameters
-    SEGMENTATION_DEFAULTS = {
-        "flow_threshold": 0.4,
-        "cellprob_threshold": 0.0,
-        "augment": True,
-        "resample": True,
-        "min_size": 50,
-    }
-
-    # File format priorities
-    FILE_FORMAT_PRIORITY = [".lif", ".tif"]  # Check LIF first, then TIFF
-
-    # LIF conversion parameters
-    LIF_SERIES_INDEX = 0  # Process first series only
-    LIF_CHANNEL_INDEX = 0  # Process first channel only
-    LIF_PLANE_INDEX = 0  # Process first plane only
+        return int(diameter * self.NECK_DISTANCE_RATIO)

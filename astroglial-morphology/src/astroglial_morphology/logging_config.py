@@ -35,17 +35,23 @@ def _coerce_level(level: LevelType) -> int:
     raise ValueError(f"Unsupported log level: {level!r}")
 
 
-def _resolve_log_path(log_file: Optional[str]) -> Optional[Path]:
-    env_log_file = os.getenv("ASTROGLIAL_LOGFILE")
-    env_log_dir = os.getenv("ASTROGLIAL_LOGDIR")
+def _resolve_log_path(
+    log_file: Optional[str],
+    log_dir: Optional[str] = None,
+    *,
+    use_environment: bool = True,
+) -> Optional[Path]:
+    env_log_file = os.getenv("ASTROGLIAL_LOGFILE") if use_environment else None
+    env_log_dir = os.getenv("ASTROGLIAL_LOGDIR") if use_environment else None
 
     target = log_file or env_log_file
     if not target:
         return None
 
     path = Path(target)
-    if not path.is_absolute() and env_log_dir:
-        path = Path(env_log_dir) / path
+    resolved_log_dir = log_dir if log_dir is not None else env_log_dir
+    if not path.is_absolute() and resolved_log_dir:
+        path = Path(resolved_log_dir) / path
 
     path.parent.mkdir(parents=True, exist_ok=True)
     return path.resolve()
@@ -83,6 +89,34 @@ def _ensure_file_handler(path: Path) -> None:
     handler = logging.FileHandler(path, encoding="utf-8")
     handler.setFormatter(logging.Formatter(DEFAULT_FORMAT, DEFAULT_DATEFMT))
     root_logger.addHandler(handler)
+
+
+def adopt_existing_logging() -> None:
+    """Mark externally configured logging (for example Hydra) as initialized.
+
+    Hydra configures the root logger before invoking an application. Marking it
+    initialized prevents :func:`get_logger` from replacing Hydra's console and
+    per-run file handlers with the package's programmatic defaults.
+    """
+
+    global _LOGGING_INITIALIZED
+    _LOGGING_INITIALIZED = True
+
+
+def add_log_file_handler(
+    log_file: Optional[str],
+    *,
+    log_dir: Optional[str] = None,
+    use_environment: bool = True,
+) -> Optional[Path]:
+    """Append an optional file handler without replacing the root handlers."""
+
+    log_path = _resolve_log_path(
+        log_file, log_dir, use_environment=use_environment
+    )
+    if log_path is not None:
+        _ensure_file_handler(log_path)
+    return log_path
 
 
 def setup_logging(

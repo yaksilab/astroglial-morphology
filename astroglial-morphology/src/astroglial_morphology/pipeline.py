@@ -116,7 +116,11 @@ class Pipeline:
         # Preserve the eagerly-created legacy segmenter for existing callers
         # and tests, but avoid loading an unrelated model in ensemble mode.
         self.segmenter = (
-            Segmentation(model_path=self.model_path, gpu=self.use_gpu)
+            Segmentation(
+                model_path=self.model_path,
+                gpu=self.use_gpu,
+                default_eval_params=self.config.SEGMENTATION_DEFAULTS,
+            )
             if self.segmentation_mode == "single"
             else None
         )
