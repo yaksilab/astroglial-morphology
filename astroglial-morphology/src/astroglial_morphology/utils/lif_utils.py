@@ -84,11 +84,20 @@ def extract_lif_metadata(lif_path: str, series_index: int = 0) -> Metadata:
         logger.warning("Could not extract pixel resolution from LIF, using default 1.0")
         pix_resolution = 1.0
 
-    # Extract frame interval (time between frames in seconds)
-    # img.scale[3] is time interval in seconds (if available)
-    if len(img.scale) >= 4 and img.scale[3] > 0:
-        finterval = img.scale[3]
-        logger.info(f"Frame interval: {finterval:.4f} seconds")
+    # Extract frame interval (time between frames in seconds).
+    #
+    # readlif's time scale is a frame rate in images/second, not a duration in
+    # seconds/frame (see ``readlif.reader.LifImage.scale``).  Metadata stores
+    # an interval, so invert it here.  Treating this value as an interval
+    # silently inverted Suite2p's ``fs`` for every LIF acquisition.
+    if len(img.scale) >= 4 and img.scale[3] is not None and img.scale[3] > 0:
+        frame_rate = float(img.scale[3])
+        finterval = 1.0 / frame_rate
+        logger.info(
+            "Frame rate: %.4f Hz; frame interval: %.4f seconds",
+            frame_rate,
+            finterval,
+        )
     else:
         logger.warning("Could not extract frame interval from LIF, using default 1.0s")
         finterval = 1.0

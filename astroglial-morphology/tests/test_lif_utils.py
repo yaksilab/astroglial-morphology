@@ -62,7 +62,8 @@ class TestExtractLifMetadata:
         mock_img.name = "test-series"
         mock_img.dims = mock_dims
         mock_img.channels = 1
-        mock_img.scale = (8.36, 8.36, 1.0, 6.818)  # x, y, z, t scales
+        # readlif reports the time scale as a frame rate in images/second.
+        mock_img.scale = (8.36, 8.36, 1.0, 6.818)  # x, y, z, fps
         
         mock_lif = Mock()
         mock_lif.image_list = [{"name": "test-series"}]
@@ -78,8 +79,8 @@ class TestExtractLifMetadata:
         assert metadata.nchannels == 1
         assert metadata.nplanes == 1
         assert metadata.pix_resolution == 8.36
-        assert metadata.finterval == 6.818
-        assert metadata.fs == pytest.approx(1.0 / 6.818, rel=1e-5)
+        assert metadata.finterval == pytest.approx(1.0 / 6.818, rel=1e-5)
+        assert metadata.fs == pytest.approx(6.818, rel=1e-5)
     
     @patch('astroglial_morphology.utils.lif_utils.LifFile')
     def test_extract_metadata_multiple_series_warning(self, mock_lif_class, tmp_path, caplog):
