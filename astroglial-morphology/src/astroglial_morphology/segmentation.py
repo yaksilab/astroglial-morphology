@@ -1,4 +1,5 @@
-from typing import Generator, Optional
+from copy import deepcopy
+from typing import Any, Generator, Mapping, Optional
 from cellpose.models import CellposeModel
 from suite2p.io import BinaryFile
 from cellpose.io import masks_flows_to_seg
@@ -19,14 +20,15 @@ class Segmentation:
         self,
         model_path: Optional[str] = None,
         gpu: bool = False,
+        default_eval_params: Optional[Mapping[str, Any]] = None,
     ) -> None:
         if model_path is None:
-            model_path = PipelineConfig.get_model_path()
+            model_path = PipelineConfig().get_model_path()
         self.model = CellposeModel(
             gpu=gpu,
             pretrained_model=model_path,  # pyright: ignore[reportArgumentType]
         )
-        self.default_eval_params = {
+        self.default_eval_params: dict[str, Any] = {
             "flow_threshold": 0.4,
             "cellprob_threshold": 0.0,
             "diameter": None,
@@ -45,6 +47,8 @@ class Segmentation:
             "tile_norm_smooth3D": 1,
             "invert": False,
         }
+        if default_eval_params is not None:
+            self.default_eval_params = deepcopy(dict(default_eval_params))
 
     def segment_img(
         self,

@@ -1,0 +1,112 @@
+defaults:
+  - segmentation: single
+  - logging: default
+  - _self_
+
+# Use action=prefetch_models to download the selected ensemble profile without
+# requiring input.data_path.
+action: run
+
+input:
+  data_path: null
+  pixels_per_micron: null
+
+registration:
+  reg_tif: false
+  skip: false
+  force: false
+  channel: 0
+  regmetrics: false
+
+correspondence:
+  enabled: true
+  segment_length: 5
+  delta_x: 20.0
+  subsegmentation_mode: equal_length
+  trace_channels: null
+
+runtime:
+  use_gpu: false
+  manual_correction: false
+  alignment_only: false
+
+pipeline:
+  morphology:
+    astrocyte_diameter_microns: 31.35
+    diameter_buffer_microns: 10.0
+    neck_distance_ratio: 0.47
+  suite2p_defaults:
+    save_path0: ""
+    save_folder: []
+    functional_chan: 1
+    tau: 3
+    multiplane_parallel: false
+    combined: true
+    do_registration: true
+    two_step_registration: false
+    keep_movie_raw: false
+    maxregshift: 0.11
+    align_by_chan: 1
+    smooth_sigma_time: 1
+    do_regmetrics: false
+    subpixel: 10
+    nonrigid: false
+    roidetect: false
+    spikedetect: false
+  batch:
+    nimg_init_ratio: 0.15
+    nimg_init_max: 300
+    batch_size_ratio: 1.0
+    batch_size_max: 500
+  segmentation_defaults:
+    flow_threshold: 0.4
+    cellprob_threshold: 0.0
+    diameter: null
+    augment: true
+    resample: true
+    min_size: 80
+    normalize:
+      lowhigh: null
+      percentile: [1.0, 99.0]
+      normalize: true
+      norm3D: true
+      sharpen_radius: 0
+      smooth_radius: 0
+      tile_norm_blocksize: 0
+      tile_norm_smooth3D: 1
+      invert: false
+  file_format_priority: [".lif", ".tif"]
+  lif:
+    series_index: 0
+    channel_index: 0
+    plane_index: 0
+
+hydra:
+  run:
+    dir: outputs/${now:%Y-%m-%d}/${now:%H-%M-%S}
+  sweep:
+    dir: multirun/${now:%Y-%m-%d}/${now:%H-%M-%S}
+    subdir: ${hydra.job.num}
+  job:
+    chdir: false
+  job_logging:
+    version: 1
+    disable_existing_loggers: false
+    formatters:
+      default:
+        format: "%(asctime)s | %(name)s | %(levelname)s | %(message)s"
+        datefmt: "%Y-%m-%d %H:%M:%S"
+    handlers:
+      console:
+        class: logging.StreamHandler
+        formatter: default
+        stream: ext://sys.stderr
+      file:
+        class: logging.FileHandler
+        formatter: default
+        filename: ${hydra.runtime.output_dir}/${hydra.job.name}.log
+        encoding: utf-8
+    root:
+      handlers: [console, file]
+      level: ${logging.level}
+

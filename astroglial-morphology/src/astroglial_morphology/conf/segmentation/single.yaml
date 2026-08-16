@@ -1,0 +1,8 @@
+mode: single
+model_path: ${oc.decode:${oc.env:ASTROGLIAL_MODEL_PATH,null}}
+ensemble_profile: cp3-three-part
+ensemble_config: null
+model_cache_dir: ${oc.decode:${oc.env:ASTROGLIAL_MODEL_CACHE_DIR,null}}
+projection: mean
+channel: auto
+

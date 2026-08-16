@@ -1,0 +1,3 @@
+level: ${oc.env:ASTROGLIAL_LOGLEVEL,INFO}
+log_file: ${oc.decode:${oc.env:ASTROGLIAL_LOGFILE,null}}
+log_dir: ${oc.decode:${oc.env:ASTROGLIAL_LOGDIR,null}}
