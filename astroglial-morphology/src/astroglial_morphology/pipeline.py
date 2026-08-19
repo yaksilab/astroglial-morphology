@@ -846,6 +846,78 @@ class Pipeline:
 
         return self.masks
 
+    def _resolve_existing_seg_path(
+        self, projection_type: str, segmentation_channel: str
+    ) -> Path:
+        """Locate a saved Cellpose ``*_seg.npy`` to resume after correction."""
+
+        plane = self._plane_path()
+        if segmentation_channel == "auto":
+            segmentation_channel = (
+                "1" if self._available_channel_count() > 1 else "0"
+            )
+        if segmentation_channel == "both":
+            suffix = "both"
+        else:
+            suffix = f"ch{int(segmentation_channel)}"
+        expected = plane / f"{projection_type}_{suffix}_image_seg.npy"
+        if expected.is_file():
+            return expected
+
+        candidates = sorted(
+            path
+            for path in plane.glob("*_seg.npy")
+            if path.name != "subsegmented_masks_seg.npy"
+        )
+        if len(candidates) == 1:
+            logger.warning(
+                "Expected %s; using existing %s instead",
+                expected.name,
+                candidates[0].name,
+            )
+            return candidates[0]
+        if candidates:
+            names = ", ".join(path.name for path in candidates)
+            raise FileNotFoundError(
+                f"Expected segmentation file {expected.name} in {plane}. "
+                f"Found: {names}. Match segmentation.projection and "
+                "segmentation.channel to the file you corrected."
+            )
+        raise FileNotFoundError(
+            f"No segmentation file found at {expected}. "
+            "Run automatic segmentation and save mask corrections first."
+        )
+
+    def _load_existing_segmentation(
+        self, projection_type: str, segmentation_channel: str
+    ) -> np.ndarray:
+        """Load masks from disk instead of re-running Cellpose."""
+
+        if self.metadata is None:
+            raise RuntimeError("Metadata is required for segmentation")
+        if segmentation_channel == "auto":
+            segmentation_channel = (
+                "1" if self._available_channel_count() > 1 else "0"
+            )
+        self.segmentation_channel = segmentation_channel
+        mask_path = self._resolve_existing_seg_path(
+            projection_type, segmentation_channel
+        )
+        payload = np.load(mask_path, allow_pickle=True).item()
+        self.masks = np.asarray(payload["masks"])
+        self.segmentation_base_path = str(
+            mask_path.with_name(mask_path.name.replace("_seg.npy", ""))
+        )
+        self.ensemble_result = None
+        labels = np.unique(self.masks)
+        labels = labels[labels != 0]
+        logger.info(
+            "Loaded existing segmentation %s (%d ROIs)",
+            mask_path,
+            int(labels.size),
+        )
+        return self.masks
+
     def _prompt_for_manual_correction(self, seg_path: str) -> None:
         """
         Prompt user to manually correct masks in Cellpose.
@@ -1303,6 +1375,7 @@ class Pipeline:
         trace_channels: Optional[Union[str, Sequence[int]]] = None,
         do_regmetrics: bool = False,
         alignment_only: bool = False,
+        skip_segmentation: bool = False,
     ) -> Dict[str, Any]:
         """
         Run the complete pipeline.
@@ -1310,7 +1383,7 @@ class Pipeline:
         Args:
             skip_registration: If True, unconditionally skip registration (deprecated, auto-detected now)
             force_registration: If True, run registration even if already complete
-            manual_correction: If True, load manually corrected masks
+            manual_correction: If True, pause for interactive mask correction
             export_correspondence: Build correspondence/trace outputs when True
             correspondence_segment_length: Segment length in pixels for subsegmentation
             correspondence_delta_x: X-axis grouping distance for correspondence alignment
@@ -1320,6 +1393,7 @@ class Pipeline:
             trace_channels: Zero-based channels to export traces for
             do_regmetrics: Whether Suite2p should compute optional registration metrics
             alignment_only: Stop after registration and projection creation
+            skip_segmentation: Load existing ``*_seg.npy`` masks instead of running Cellpose
 
         Returns:
             Dictionary with pipeline results
