@@ -1,0 +1,43 @@
+<div class="mask-editor" tabindex="0">
+  <div class="mask-editor__toolbar">
+    <div class="mask-editor__tools">
+      <button data-tool="select" class="mask-editor__tool" title="Select ROI (S)">Select</button>
+      <button data-tool="brush" class="mask-editor__tool" title="Trace an outline, then auto-fill (B)">Brush</button>
+      <button data-tool="erase" class="mask-editor__tool" title="Erase (E)">Erase</button>
+      <button data-tool="split" class="mask-editor__tool" title="Split with line (X)">Split</button>
+      <button data-tool="pan" class="mask-editor__tool" title="Pan (space)">Pan</button>
+    </div>
+    <div class="mask-editor__brush">
+      <label>Brush
+        <input type="range" min="1" max="60" step="1" data-role="brush" />
+        <span data-role="brush-value">3</span>
+      </label>
+      <label>
+        <input type="checkbox" data-role="new-label" />
+        New label
+      </label>
+      <label>Alpha
+        <input type="range" min="0" max="100" step="1" data-role="alpha" />
+        <span data-role="alpha-value">45</span>
+      </label>
+      <button type="button" data-role="overlay-toggle" class="is-active" title="Show or hide mask overlay (O)" aria-pressed="true">Overlay</button>
+    </div>
+    <div class="mask-editor__actions">
+      <button data-role="undo" title="Undo (Ctrl+Z)">Undo</button>
+      <button data-role="redo" title="Redo (Ctrl+Y)">Redo</button>
+      <button data-role="delete" title="Delete selection (Del)">Delete</button>
+      <button data-role="merge" title="Merge selected labels">Merge</button>
+      <button data-role="commit" class="mask-editor__commit" title="Save changes">Save</button>
+    </div>
+  </div>
+  <div class="mask-editor__stage">
+    <canvas data-role="image"></canvas>
+    <canvas data-role="masks"></canvas>
+    <canvas data-role="overlay"></canvas>
+  </div>
+  <div class="mask-editor__status">
+    <span data-role="info">Ready</span>
+    <span data-role="selection">Selection: none</span>
+    <span data-role="counts">ROIs: 0</span>
+  </div>
+</div>
