@@ -164,6 +164,8 @@ class Pipeline:
         self.input_mode = "raw"
         self.plane_path: Optional[Path] = None
         self.ensemble_result: Optional[EnsembleSegmentationResult] = None
+        # Effective Cellpose eval kwargs recorded for parameter provenance.
+        self.segmentation_eval_params: Optional[Dict[str, Any]] = None
 
     @staticmethod
     def _normalize_trace_channels(
@@ -815,6 +817,7 @@ class Pipeline:
                 **segmentation_kwargs,
             )
             self.masks = self.ensemble_result.masks
+            self.segmentation_eval_params = dict(segmentation_kwargs)
         else:
             if self.segmenter is None:
                 raise RuntimeError("Single-model segmenter was not initialized")
@@ -832,6 +835,15 @@ class Pipeline:
                 diameter=diameter,
                 **segmentation_kwargs,
             )
+            segmenter_defaults = getattr(self.segmenter, "default_eval_params", None)
+            if not isinstance(segmenter_defaults, dict):
+                segmenter_defaults = dict(self.config.SEGMENTATION_DEFAULTS)
+            effective_eval = {
+                **segmenter_defaults,
+                **segmentation_kwargs,
+                "diameter": diameter,
+            }
+            self.segmentation_eval_params = effective_eval
 
         self._link_cellpose_mask_to_source_image(
             Path(f"{save_path}_seg.npy"), source_image_path
@@ -1259,6 +1271,148 @@ class Pipeline:
             "suite2p_timing": self._json_safe(ops.get("timing")),
         }
 
+    _REGISTRATION_PARAM_KEYS = (
+        "do_registration",
+        "two_step_registration",
+        "nonrigid",
+        "maxregshift",
+        "subpixel",
+        "smooth_sigma",
+        "smooth_sigma_time",
+        "th_badframes",
+        "tau",
+        "align_by_chan",
+        "functional_chan",
+        "batch_size",
+        "nimg_init",
+        "do_regmetrics",
+        "reg_tif",
+        "reg_tif_chan2",
+        "block_size",
+        "snr_thresh",
+        "maxregshiftNR",
+        "1Preg",
+        "spatial_hp_reg",
+        "pre_smooth",
+        "spatial_taper",
+        "keep_movie_raw",
+    )
+
+    _SEGMENTATION_PARAM_KEYS = (
+        "flow_threshold",
+        "cellprob_threshold",
+        "diameter",
+        "augment",
+        "resample",
+        "min_size",
+    )
+
+    _RUNTIME_PARAM_KEYS = (
+        "use_gpu",
+        "manual_correction",
+        "alignment_only",
+        "export_correspondence",
+        "registration_channel",
+        "segmentation_channel",
+        "segmentation_projection",
+        "reg_tif",
+        "segmentation_mode",
+        "ensemble_profile",
+    )
+
+    def _parameter_snapshot(self) -> Dict[str, Any]:
+        """Collect resolved parameters plus defaults and overrides.
+
+        This lets the GUI show default vs non-default values without inspecting
+        the CLI arguments used to launch the run.
+        """
+
+        defaults_config = PipelineConfig()
+        suite2p_defaults = defaults_config.SUITE2P_DEFAULTS
+        seg_defaults = defaults_config.SEGMENTATION_DEFAULTS
+
+        registration_used: Dict[str, Any] = {}
+        registration_defaults: Dict[str, Any] = {}
+        if self.suite2p_options is not None:
+            default_key_aliases = {"1Preg": "one_photon_reg"}
+            for key in self._REGISTRATION_PARAM_KEYS:
+                if key in self.suite2p_options:
+                    registration_used[key] = self.suite2p_options.get(key)
+                default_key = default_key_aliases.get(key, key)
+                if default_key in suite2p_defaults:
+                    registration_defaults[key] = suite2p_defaults.get(default_key)
+
+        segmentation_used: Dict[str, Any] = {}
+        segmentation_defaults_snapshot: Dict[str, Any] = {}
+        eval_params = self.segmentation_eval_params or {}
+        for key in self._SEGMENTATION_PARAM_KEYS:
+            if key in eval_params:
+                segmentation_used[key] = eval_params.get(key)
+            if key in seg_defaults:
+                segmentation_defaults_snapshot[key] = seg_defaults.get(key)
+        # Normalization sub-dict is treated as a single grouped parameter for
+        # display purposes; store the used and default versions verbatim.
+        if "normalize" in eval_params:
+            segmentation_used["normalize"] = eval_params["normalize"]
+        if "normalize" in seg_defaults:
+            segmentation_defaults_snapshot["normalize"] = seg_defaults["normalize"]
+
+        runtime_used = {
+            "use_gpu": self.use_gpu,
+            "manual_correction": self.manual_correction,
+            "alignment_only": self.alignment_only,
+            "export_correspondence": self.export_correspondence,
+            "registration_channel": self.registration_channel,
+            "segmentation_channel": self.segmentation_channel,
+            "segmentation_projection": self.segmentation_projection,
+            "reg_tif": self.reg_tif,
+            "segmentation_mode": self.segmentation_mode,
+            "ensemble_profile": self.ensemble_profile,
+        }
+        runtime_defaults = {
+            "use_gpu": False,
+            "manual_correction": False,
+            "alignment_only": False,
+            "export_correspondence": True,
+            "registration_channel": 0,
+            "segmentation_channel": "auto",
+            "segmentation_projection": "mean",
+            "reg_tif": False,
+            "segmentation_mode": "single",
+            "ensemble_profile": DEFAULT_PROFILE_NAME,
+        }
+
+        parameters = {
+            "registration": registration_used,
+            "segmentation": segmentation_used,
+            "runtime": runtime_used,
+        }
+        parameter_defaults = {
+            "registration": registration_defaults,
+            "segmentation": segmentation_defaults_snapshot,
+            "runtime": runtime_defaults,
+        }
+        parameter_overrides = {}
+        for group, used in parameters.items():
+            defaults_for_group = parameter_defaults.get(group, {})
+            differences = {}
+            for key, value in used.items():
+                if key not in defaults_for_group:
+                    continue
+                if defaults_for_group[key] != value:
+                    differences[key] = {
+                        "default": defaults_for_group[key],
+                        "used": value,
+                    }
+            if differences:
+                parameter_overrides[group] = differences
+
+        return {
+            "parameters": self._json_safe(parameters),
+            "parameter_defaults": self._json_safe(parameter_defaults),
+            "parameter_overrides": self._json_safe(parameter_overrides),
+        }
+
     def write_pipeline_metadata(self) -> None:
         if self.suite2p_options is None:
             return
@@ -1355,6 +1509,10 @@ class Pipeline:
             "platform": platform.platform(),
             "created_at": datetime.now().isoformat(timespec="seconds"),
             "hostname": socket.gethostname(),
+            "segmentation_eval_params": self._json_safe(
+                self.segmentation_eval_params
+            ),
+            **self._parameter_snapshot(),
         }
         payload = self._json_safe(payload)
         metadata_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
@@ -1455,12 +1613,19 @@ class Pipeline:
                 "correspondence": None,
             }
 
-        # Step 6: Segment cells (with optional interactive correction)
-        self.segment_cells(
-            interactive_correction=manual_correction,
-            projection_type=segmentation_projection,
-            segmentation_channel=self.segmentation_channel,
-        )
+        # Step 6: Segment cells, or resume from a saved (possibly corrected) mask
+        if skip_segmentation:
+            logger.info("Skipping Cellpose; loading existing segmentation")
+            self._load_existing_segmentation(
+                projection_type=segmentation_projection,
+                segmentation_channel=self.segmentation_channel,
+            )
+        else:
+            self.segment_cells(
+                interactive_correction=manual_correction,
+                projection_type=segmentation_projection,
+                segmentation_channel=self.segmentation_channel,
+            )
         # Refresh metadata now that the final (single or combined) output and
         # ensemble mask statistics are known.
         self.write_pipeline_metadata()
