@@ -77,6 +77,7 @@ class SegmentationSettings:
     model_cache_dir: Optional[str] = None
     projection: str = "mean"
     channel: str = "auto"
+    skip: bool = False
 
 
 @dataclass

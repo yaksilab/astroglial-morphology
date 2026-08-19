@@ -47,10 +47,19 @@ pipeline:
     keep_movie_raw: false
     maxregshift: 0.11
     align_by_chan: 1
+    smooth_sigma: 1.15
     smooth_sigma_time: 1
+    th_badframes: 1.0
     do_regmetrics: false
     subpixel: 10
     nonrigid: false
+    block_size: [128, 128]
+    snr_thresh: 1.2
+    maxregshiftNR: 5
+    one_photon_reg: false
+    spatial_hp_reg: 42
+    pre_smooth: 0
+    spatial_taper: 40
     roidetect: false
     spikedetect: false
   batch:

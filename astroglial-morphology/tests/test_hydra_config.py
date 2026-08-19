@@ -41,6 +41,9 @@ def test_default_config_matches_existing_runtime_defaults() -> None:
     assert config.pipeline.suite2p_defaults["maxregshift"] == pytest.approx(0.11)
     assert config.pipeline.segmentation_defaults["min_size"] == 80
     assert config.correspondence.enabled is True
+    assert config.segmentation.skip is False
+    assert config.pipeline.suite2p_defaults["smooth_sigma"] == pytest.approx(1.15)
+    assert config.pipeline.suite2p_defaults["one_photon_reg"] is False
 
 
 def test_ensemble_group_and_native_overrides_are_composed() -> None:
@@ -57,6 +60,24 @@ def test_ensemble_group_and_native_overrides_are_composed() -> None:
     assert config.input.data_path == "/data/example"
     assert config.registration.force is True
     assert config.correspondence.trace_channels == [0, 1]
+
+
+def test_one_photon_suite2p_overrides_are_composed() -> None:
+    config = compose_app_config(
+        _compose(
+            "pipeline.suite2p_defaults.one_photon_reg=true",
+            "pipeline.suite2p_defaults.smooth_sigma=3",
+        )
+    )
+
+    assert config.pipeline.suite2p_defaults["one_photon_reg"] is True
+    assert config.pipeline.suite2p_defaults["smooth_sigma"] == pytest.approx(3.0)
+
+
+def test_segmentation_skip_override_is_composed() -> None:
+    config = compose_app_config(_compose("segmentation.skip=true"))
+
+    assert config.segmentation.skip is True
 
 
 def test_environment_defaults_are_overridden_by_explicit_hydra_values(

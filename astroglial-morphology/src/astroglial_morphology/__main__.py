@@ -113,6 +113,7 @@ def run_application(config: AppConfig) -> Optional[dict[str, object]]:
         trace_channels=config.correspondence.trace_channels,
         do_regmetrics=config.registration.regmetrics,
         alignment_only=config.runtime.alignment_only,
+        skip_segmentation=config.segmentation.skip,
     )
 
     logger.info("Pipeline completed successfully")

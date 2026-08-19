@@ -24,10 +24,19 @@ def _suite2p_defaults() -> Dict[str, Any]:
         "keep_movie_raw": False,
         "maxregshift": 0.11,
         "align_by_chan": 1,
+        "smooth_sigma": 1.15,
         "smooth_sigma_time": 1,
+        "th_badframes": 1.0,
         "do_regmetrics": False,
         "subpixel": 10,
         "nonrigid": False,
+        "block_size": [128, 128],
+        "snr_thresh": 1.2,
+        "maxregshiftNR": 5,
+        "one_photon_reg": False,
+        "spatial_hp_reg": 42,
+        "pre_smooth": 0,
+        "spatial_taper": 40,
         "roidetect": False,
         "spikedetect": False,
     }
@@ -118,6 +127,20 @@ class PipelineConfig:
         """Build Suite2p options from defaults, metadata, and explicit overrides."""
 
         options = deepcopy(self.SUITE2P_DEFAULTS)
+        if "one_photon_reg" in options:
+            options["1Preg"] = bool(options.pop("one_photon_reg"))
+        block_size = options.get("block_size")
+        if isinstance(block_size, str):
+            options["block_size"] = [
+                int(part.strip())
+                for part in block_size.split(",")
+                if part.strip()
+            ]
+        elif isinstance(block_size, tuple):
+            options["block_size"] = list(block_size)
+
+        pinned_nimg_init = options.pop("nimg_init", None)
+        pinned_batch_size = options.pop("batch_size", None)
         options.update(
             {
                 "nplanes": metadata.nplanes,
@@ -126,9 +149,12 @@ class PipelineConfig:
                 "reg_tif": reg_tif,
             }
         )
-        options.update(
-            self.calculate_batch_params(metadata.frames_per_channel_per_plane)
-        )
+        batch = self.calculate_batch_params(metadata.frames_per_channel_per_plane)
+        if pinned_nimg_init is not None:
+            batch["nimg_init"] = int(pinned_nimg_init)
+        if pinned_batch_size is not None:
+            batch["batch_size"] = int(pinned_batch_size)
+        options.update(batch)
         options.update(overrides)
         return options
 
