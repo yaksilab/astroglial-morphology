@@ -688,6 +688,104 @@ class TestPipelineRegistrationReuse:
         assert mock_do_registration.call_args.args[1]["do_regmetrics"] is True
         assert not data_bin.exists()
 
+    @patch("astroglial_morphology.pipeline.lif_to_suite2p_binary")
+    @patch("astroglial_morphology.pipeline.do_registration")
+    @patch("astroglial_morphology.pipeline.Segmentation")
+    def test_force_registration_does_not_reconvert_fresh_lif_binaries(
+        self, mock_seg_class, mock_do_registration, mock_lif_convert, temp_dir
+    ):
+        lif_file = temp_dir / "test.lif"
+        lif_file.touch()
+        plane_path = temp_dir / "suite2p" / "plane0"
+        plane_path.mkdir(parents=True)
+        data_bin = plane_path / "data.bin"
+        data_bin.write_bytes(b"unregistered")
+        ops = {
+            "Ly": 8,
+            "Lx": 8,
+            "Lys": [8],
+            "Lxs": [8],
+            "nchannels": 1,
+            "nframes": 4,
+            "reg_file": str(data_bin),
+            "align_by_chan": 1,
+            "functional_chan": 1,
+            "do_regmetrics": False,
+        }
+        np.save(plane_path / "ops.npy", ops, allow_pickle=True)
+        mock_lif_convert.return_value = ops
+
+        pipeline = Pipeline(data_path=str(temp_dir))
+        pipeline.file_info = InputFileInfo(path=lif_file, format=InputFormat.LIF)
+        pipeline.metadata = Metadata(
+            nframes=4,
+            nchannels=1,
+            nplanes=1,
+            finterval=1.0,
+            pix_resolution=8.36,
+        )
+        pipeline.prepare_data()
+
+        performed = pipeline.run_registration(force=True)
+
+        assert performed is True
+        mock_lif_convert.assert_not_called()
+        mock_do_registration.assert_called_once()
+        assert mock_do_registration.call_args.args[1]["do_registration"] == 2
+        assert data_bin.read_bytes() == b"unregistered"
+
+    @patch("astroglial_morphology.pipeline.lif_to_suite2p_binary")
+    @patch("astroglial_morphology.pipeline.do_registration")
+    @patch("astroglial_morphology.pipeline.Segmentation")
+    def test_force_registration_restores_keep_movie_raw_instead_of_lif(
+        self, mock_seg_class, mock_do_registration, mock_lif_convert, temp_dir
+    ):
+        lif_file = temp_dir / "test.lif"
+        lif_file.touch()
+        suite2p_dir = temp_dir / "suite2p"
+        plane_path = suite2p_dir / "plane0"
+        plane_path.mkdir(parents=True)
+        data_bin = plane_path / "data.bin"
+        data_raw = plane_path / "data_raw.bin"
+        data_bin.write_bytes(b"registered")
+        data_raw.write_bytes(b"raw-frames")
+        ops = {
+            "Ly": 8,
+            "Lx": 8,
+            "Lys": [8],
+            "Lxs": [8],
+            "nchannels": 1,
+            "nframes": 4,
+            "reg_file": str(data_bin),
+            "align_by_chan": 1,
+            "functional_chan": 1,
+            "do_regmetrics": False,
+        }
+        np.save(plane_path / "ops.npy", ops, allow_pickle=True)
+        (suite2p_dir / ".registration_complete").touch()
+        mock_lif_convert.return_value = ops
+
+        pipeline = Pipeline(data_path=str(temp_dir))
+        pipeline.file_info = InputFileInfo(path=lif_file, format=InputFormat.LIF)
+        pipeline.metadata = Metadata(
+            nframes=4,
+            nchannels=1,
+            nplanes=1,
+            finterval=1.0,
+            pix_resolution=8.36,
+        )
+        pipeline.prepare_data()
+        mock_lif_convert.reset_mock()
+
+        performed = pipeline.run_registration(force=True)
+
+        assert performed is True
+        mock_lif_convert.assert_not_called()
+        mock_do_registration.assert_called_once()
+        assert data_bin.read_bytes() == b"raw-frames"
+        assert data_raw.read_bytes() == b"raw-frames"
+        assert not (suite2p_dir / ".registration_complete").exists()
+
 
 class TestPipelineChannelValidation:
     """Tests for the one/two-channel processing limit."""

@@ -4,8 +4,10 @@ import logging
 import json
 import os
 import platform
+import shutil
 import socket
 import sys
+import time
 from datetime import datetime
 from importlib import metadata as importlib_metadata
 from pathlib import Path
@@ -58,13 +60,31 @@ class Pipeline:
         "functional_chan",
         "nchannels",
         "do_regmetrics",
+        "maxregshift",
+        "nonrigid",
+        "two_step_registration",
+        "subpixel",
+        "smooth_sigma",
+        "smooth_sigma_time",
+        "th_badframes",
+        "tau",
+        "nimg_init",
+        "batch_size",
+        "block_size",
+        "snr_thresh",
+        "maxregshiftNR",
+        "1Preg",
+        "spatial_hp_reg",
+        "pre_smooth",
+        "spatial_taper",
+        "keep_movie_raw",
     )
     _REGISTRATION_INPUT_FILENAMES = (
-        "ops.npy",
         "data.bin",
         "data_chan2.bin",
         "data_raw.bin",
         "data_chan2_raw.bin",
+        "ops.npy",
     )
 
     def __init__(
@@ -282,14 +302,18 @@ class Pipeline:
             )
             return False
 
-        mismatches = {
-            key: {
-                "completed": self._json_safe(existing_ops.get(key)),
-                "requested": self._json_safe(self.suite2p_options.get(key)),
-            }
-            for key in self._REGISTRATION_COMPATIBILITY_KEYS
-            if existing_ops.get(key) != self.suite2p_options.get(key)
-        }
+        mismatches = {}
+        for key in self._REGISTRATION_COMPATIBILITY_KEYS:
+            # An older ops.npy may not contain the newer expanded keys.  Only
+            # flag a drift when both sides actually recorded a value; otherwise
+            # trust the existing binaries so users are not forced to re-run.
+            if key not in existing_ops or key not in self.suite2p_options:
+                continue
+            if existing_ops.get(key) != self.suite2p_options.get(key):
+                mismatches[key] = {
+                    "completed": self._json_safe(existing_ops.get(key)),
+                    "requested": self._json_safe(self.suite2p_options.get(key)),
+                }
         if mismatches:
             logger.info(
                 "Registration configuration changed; rebuilding inputs: %s",
@@ -298,22 +322,68 @@ class Pipeline:
             return False
         return True
 
+    def _unlink_path(self, path: Path) -> None:
+        """Delete *path*, retrying briefly if Windows still has it locked."""
+
+        delays = (0.0, 0.2, 0.5, 1.0, 2.0)
+        last_exc: Optional[PermissionError] = None
+        for delay in delays:
+            if delay:
+                time.sleep(delay)
+            try:
+                path.unlink()
+                return
+            except FileNotFoundError:
+                return
+            except PermissionError as exc:
+                last_exc = exc
+                logger.warning("Retrying delete of locked file %s", path)
+        raise PermissionError(
+            f"Could not delete {path} because another process has it open. "
+            "Close the Streamlit GUI, Suite2p, or a previous pipeline run and retry."
+        ) from last_exc
+
     def _remove_registration_inputs(self) -> None:
         suite2p_dir = self._suite2p_output_dir()
         self._invalidate_registration_completion("registration is being rebuilt")
 
+        # Delete binaries before ops.npy. If a later unlink fails, prepare_data
+        # can still see a consistent converted pair instead of reconverting.
+        filenames = self._REGISTRATION_INPUT_FILENAMES
         for plane_path in suite2p_dir.glob("plane*"):
             if not plane_path.is_dir():
                 continue
-            for filename in self._REGISTRATION_INPUT_FILENAMES:
+            for filename in filenames:
                 input_path = plane_path / filename
                 if input_path.exists():
-                    input_path.unlink()
+                    self._unlink_path(input_path)
                     logger.debug("Removed stale registration input: %s", input_path)
+
+    def _restore_raw_movie_binaries(self) -> bool:
+        """Restore unregistered frames from keep_movie_raw copies when present."""
+
+        plane_path = self._suite2p_output_dir() / "plane0"
+        raw_path = plane_path / "data_raw.bin"
+        if not raw_path.is_file():
+            return False
+        shutil.copyfile(raw_path, plane_path / "data.bin")
+        chan2_raw = plane_path / "data_chan2_raw.bin"
+        if chan2_raw.is_file():
+            shutil.copyfile(chan2_raw, plane_path / "data_chan2.bin")
+        logger.info(
+            "Restored unregistered binaries from data_raw.bin; skipping source reconversion"
+        )
+        return True
 
     def _rebuild_registration_inputs(self) -> None:
         if self.file_info is None:
             raise RuntimeError("Input must be detected before rebuilding registration")
+
+        if self.file_info.format == InputFormat.LIF and self._restore_raw_movie_binaries():
+            self._invalidate_registration_completion(
+                "registration is being rebuilt from keep_movie_raw binaries"
+            )
+            return
 
         self._remove_registration_inputs()
         if self.file_info.format == InputFormat.LIF:
@@ -536,14 +606,20 @@ class Pipeline:
         registration_complete = check_registration_complete(
             self.data_path, self.suite2p_options
         )
+        if force:
+            self.suite2p_options["do_registration"] = 2
         if registration_complete and not force:
             if self._registration_configuration_matches():
                 logger.info("Registration already complete - skipping")
                 return False
             self._rebuild_registration_inputs()
-        elif force:
-            logger.info("Force registration requested; rebuilding inputs from source")
+        elif force and registration_complete:
+            logger.info("Force registration requested; restoring unregistered inputs")
             self._rebuild_registration_inputs()
+        elif force:
+            logger.info(
+                "Force registration requested; using binaries already prepared from source"
+            )
 
         logger.info("Starting motion correction...")
         logger.debug(f"Suite2p options: {self.suite2p_options}")
