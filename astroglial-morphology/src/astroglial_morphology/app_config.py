@@ -78,6 +78,7 @@ class SegmentationSettings:
     projection: str = "mean"
     channel: str = "auto"
     skip: bool = False
+    existing_seg_path: Optional[str] = None
 
 
 @dataclass

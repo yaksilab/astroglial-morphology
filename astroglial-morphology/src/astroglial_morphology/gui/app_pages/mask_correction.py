@@ -145,11 +145,12 @@ if not status.correspondence_files:
                 default_segmentation_params(),
                 "seg::",
             ),
-            data_path=str(status.data_path),
+            data_path=str(status.pipeline_data_path),
             alignment_only=False,
             skip_registration=True,
             correspondence_enabled=True,
             skip_segmentation=True,
+            existing_seg_path=str(seg_file.seg_path),
             correspondence_values=values_from_session(
                 PARAMETER_CATALOG["correspondence"],
                 default_correspondence_params(),

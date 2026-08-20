@@ -114,6 +114,7 @@ def run_application(config: AppConfig) -> Optional[dict[str, object]]:
         do_regmetrics=config.registration.regmetrics,
         alignment_only=config.runtime.alignment_only,
         skip_segmentation=config.segmentation.skip,
+        existing_seg_path=config.segmentation.existing_seg_path,
     )
 
     logger.info("Pipeline completed successfully")

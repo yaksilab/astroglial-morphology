@@ -8,6 +8,7 @@ lets the metadata page decide which values are still at their defaults.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Sequence
 
 from ...config import PipelineConfig
@@ -538,6 +539,7 @@ def build_hydra_overrides(
     skip_registration: bool,
     correspondence_enabled: bool,
     skip_segmentation: bool = False,
+    existing_seg_path: Optional[str] = None,
     correspondence_values: Optional[Mapping[str, Any]] = None,
 ) -> List[str]:
     """Translate GUI form values into Hydra ``key=value`` overrides.
@@ -554,6 +556,9 @@ def build_hydra_overrides(
         overrides.append("registration.skip=true")
     if skip_segmentation:
         overrides.append("segmentation.skip=true")
+    if existing_seg_path is not None:
+        path = Path(existing_seg_path).resolve().as_posix()
+        overrides.append(f"segmentation.existing_seg_path={path}")
     overrides.append(
         f"correspondence.enabled={'true' if correspondence_enabled else 'false'}"
     )

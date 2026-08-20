@@ -218,10 +218,13 @@ class TestParameterCatalog:
             skip_registration=True,
             correspondence_enabled=True,
             skip_segmentation=True,
+            existing_seg_path=str(tmp_path / "suite2p" / "plane0" / "chosen_seg.npy"),
             correspondence_values=corr,
         )
         assert "registration.skip=true" in overrides
         assert "segmentation.skip=true" in overrides
+        expected_path = (tmp_path / "suite2p" / "plane0" / "chosen_seg.npy").as_posix()
+        assert f"segmentation.existing_seg_path={expected_path}" in overrides
         assert "correspondence.enabled=true" in overrides
         assert "correspondence.segment_length=12" in overrides
         assert "correspondence.trace_channels=[0,1]" in overrides

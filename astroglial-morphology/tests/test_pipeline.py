@@ -1100,6 +1100,35 @@ class TestPipelineRun:
 
 
 class TestExistingSegmentationResume:
+    def test_explicit_path_wins_when_candidates_are_ambiguous(self, temp_dir):
+        with patch("astroglial_morphology.pipeline.Segmentation"):
+            pipeline = Pipeline(data_path=str(temp_dir))
+        plane = temp_dir / "suite2p" / "plane0"
+        plane.mkdir(parents=True)
+        expected = plane / "mean_ch0_image_seg.npy"
+        selected = plane / "max_projection_ch0_image_seg.npy"
+        np.save(expected, {"masks": np.zeros((2, 2), dtype=np.int32)}, allow_pickle=True)
+        np.save(selected, {"masks": np.ones((2, 2), dtype=np.int32)}, allow_pickle=True)
+
+        found = pipeline._resolve_existing_seg_path(
+            "mean", "0", existing_seg_path=selected
+        )
+
+        assert found == selected.resolve()
+
+    def test_explicit_path_must_be_inside_plane(self, temp_dir):
+        with patch("astroglial_morphology.pipeline.Segmentation"):
+            pipeline = Pipeline(data_path=str(temp_dir))
+        plane = temp_dir / "suite2p" / "plane0"
+        plane.mkdir(parents=True)
+        outside = temp_dir / "outside_seg.npy"
+        np.save(outside, {"masks": np.zeros((2, 2), dtype=np.int32)}, allow_pickle=True)
+
+        with pytest.raises(ValueError, match="Suite2p plane directory"):
+            pipeline._resolve_existing_seg_path(
+                "mean", "0", existing_seg_path=outside
+            )
+
     def test_resolve_falls_back_to_single_candidate(self, temp_dir):
         with patch("astroglial_morphology.pipeline.Segmentation"):
             pipeline = Pipeline(data_path=str(temp_dir))

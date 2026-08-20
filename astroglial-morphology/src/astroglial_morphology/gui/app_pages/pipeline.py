@@ -93,7 +93,7 @@ start_reg = values_from_session(reg_specs, reg_defaults, "reg::")
 start_overrides = build_hydra_overrides(
     start_reg,
     values_from_session(seg_specs, seg_defaults, "seg::"),
-    data_path=str(status.data_path),
+    data_path=str(status.pipeline_data_path),
     alignment_only=False,
     skip_registration=_skip_registration(bool(start_reg.get("force"))),
     correspondence_enabled=False,
@@ -109,7 +109,7 @@ if start_submitted:
         overrides = build_hydra_overrides(
             reg_values,
             seg_values,
-            data_path=str(status.data_path),
+            data_path=str(status.pipeline_data_path),
             alignment_only=False,
             skip_registration=_skip_registration(bool(reg_values.get("force"))),
             correspondence_enabled=False,
@@ -143,7 +143,23 @@ st.write(
     "subsegmentation, trace extraction, and correspondence export."
 )
 
+segmentation_options = {
+    seg_file.seg_path.name: seg_file for seg_file in status.segmentation_files
+}
+
 with st.form("pipeline-after-correction"):
+    if segmentation_options:
+        selected_seg_name = st.selectbox(
+            "Segmentation file",
+            options=list(segmentation_options),
+            help="The exact corrected mask file that the pipeline will resume from.",
+        )
+    else:
+        selected_seg_name = st.selectbox(
+            "Segmentation file",
+            options=["No segmentation available"],
+            disabled=True,
+        )
     with st.container(border=True):
         st.markdown("**Correspondence**")
         corr_values = render_specs(st, corr_specs, corr_defaults, "corr::")
@@ -154,14 +170,21 @@ with st.form("pipeline-after-correction"):
         disabled=busy or not has_segmentation,
     )
 
+selected_seg_path = (
+    segmentation_options[selected_seg_name].seg_path
+    if selected_seg_name in segmentation_options
+    else None
+)
+
 continue_overrides = build_hydra_overrides(
     values_from_session(reg_specs, reg_defaults, "reg::"),
     values_from_session(seg_specs, seg_defaults, "seg::"),
-    data_path=str(status.data_path),
+    data_path=str(status.pipeline_data_path),
     alignment_only=False,
     skip_registration=True,
     correspondence_enabled=True,
     skip_segmentation=True,
+    existing_seg_path=str(selected_seg_path) if selected_seg_path is not None else None,
     correspondence_values=values_from_session(corr_specs, corr_defaults, "corr::"),
 )
 
@@ -177,11 +200,14 @@ if continue_submitted:
         overrides = build_hydra_overrides(
             values_from_session(reg_specs, reg_defaults, "reg::"),
             values_from_session(seg_specs, seg_defaults, "seg::"),
-            data_path=str(status.data_path),
+            data_path=str(status.pipeline_data_path),
             alignment_only=False,
             skip_registration=True,
             correspondence_enabled=True,
             skip_segmentation=True,
+            existing_seg_path=(
+                str(selected_seg_path) if selected_seg_path is not None else None
+            ),
             correspondence_values=corr_values,
         )
         st.session_state.active_job = run_pipeline_subprocess(

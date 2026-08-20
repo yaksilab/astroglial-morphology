@@ -27,6 +27,7 @@ def test_run_application_maps_typed_config_to_pipeline(
     config.segmentation.projection = "max_projection"
     config.segmentation.channel = "both"
     config.segmentation.skip = True
+    config.segmentation.existing_seg_path = str(data_path / "chosen_seg.npy")
     config.correspondence.enabled = False
     config.correspondence.trace_channels = [0, 1]
     mock_pipeline_class.return_value.run.return_value = {
@@ -51,6 +52,7 @@ def test_run_application_maps_typed_config_to_pipeline(
     assert run_kwargs["segmentation_projection"] == "max_projection"
     assert run_kwargs["segmentation_channel"] == "both"
     assert run_kwargs["skip_segmentation"] is True
+    assert run_kwargs["existing_seg_path"] == str(data_path / "chosen_seg.npy")
     assert run_kwargs["trace_channels"] == [0, 1]
     assert run_kwargs["do_regmetrics"] is True
 

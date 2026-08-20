@@ -859,11 +859,34 @@ class Pipeline:
         return self.masks
 
     def _resolve_existing_seg_path(
-        self, projection_type: str, segmentation_channel: str
+        self,
+        projection_type: str,
+        segmentation_channel: str,
+        existing_seg_path: Optional[Union[str, Path]] = None,
     ) -> Path:
         """Locate a saved Cellpose ``*_seg.npy`` to resume after correction."""
 
         plane = self._plane_path()
+        if existing_seg_path is not None:
+            requested = Path(existing_seg_path).expanduser()
+            if not requested.is_absolute():
+                requested = plane / requested
+            requested = requested.resolve()
+            if requested.parent != plane.resolve():
+                raise ValueError(
+                    "segmentation.existing_seg_path must refer to a file in "
+                    f"the Suite2p plane directory: {plane}"
+                )
+            if not requested.name.endswith("_seg.npy"):
+                raise ValueError(
+                    "segmentation.existing_seg_path must name a *_seg.npy file"
+                )
+            if not requested.is_file():
+                raise FileNotFoundError(
+                    f"Selected segmentation file does not exist: {requested}"
+                )
+            return requested
+
         if segmentation_channel == "auto":
             segmentation_channel = (
                 "1" if self._available_channel_count() > 1 else "0"
@@ -901,7 +924,10 @@ class Pipeline:
         )
 
     def _load_existing_segmentation(
-        self, projection_type: str, segmentation_channel: str
+        self,
+        projection_type: str,
+        segmentation_channel: str,
+        existing_seg_path: Optional[Union[str, Path]] = None,
     ) -> np.ndarray:
         """Load masks from disk instead of re-running Cellpose."""
 
@@ -913,7 +939,7 @@ class Pipeline:
             )
         self.segmentation_channel = segmentation_channel
         mask_path = self._resolve_existing_seg_path(
-            projection_type, segmentation_channel
+            projection_type, segmentation_channel, existing_seg_path
         )
         payload = np.load(mask_path, allow_pickle=True).item()
         self.masks = np.asarray(payload["masks"])
@@ -1534,6 +1560,7 @@ class Pipeline:
         do_regmetrics: bool = False,
         alignment_only: bool = False,
         skip_segmentation: bool = False,
+        existing_seg_path: Optional[Union[str, Path]] = None,
     ) -> Dict[str, Any]:
         """
         Run the complete pipeline.
@@ -1552,6 +1579,7 @@ class Pipeline:
             do_regmetrics: Whether Suite2p should compute optional registration metrics
             alignment_only: Stop after registration and projection creation
             skip_segmentation: Load existing ``*_seg.npy`` masks instead of running Cellpose
+            existing_seg_path: Exact ``*_seg.npy`` file to load when skipping segmentation
 
         Returns:
             Dictionary with pipeline results
@@ -1619,6 +1647,7 @@ class Pipeline:
             self._load_existing_segmentation(
                 projection_type=segmentation_projection,
                 segmentation_channel=self.segmentation_channel,
+                existing_seg_path=existing_seg_path,
             )
         else:
             self.segment_cells(
