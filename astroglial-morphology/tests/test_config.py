@@ -81,3 +81,30 @@ def test_build_suite2p_options_merges_metadata_and_overrides() -> None:
     assert options["batch_size"] == 500
     assert options["reg_tif"] is True
     assert options["maxregshift"] == pytest.approx(0.2)
+    assert options["smooth_sigma"] == pytest.approx(1.15)
+    assert options["1Preg"] is False
+    assert "one_photon_reg" not in options
+    assert options["block_size"] == [128, 128]
+
+
+def test_build_suite2p_options_maps_one_photon_and_pins_batch() -> None:
+    metadata = Metadata(
+        nframes=2_000,
+        nchannels=2,
+        nplanes=1,
+        finterval=1.0,
+        pix_resolution=8.36,
+    )
+    config = PipelineConfig()
+    config.SUITE2P_DEFAULTS["one_photon_reg"] = True
+    config.SUITE2P_DEFAULTS["smooth_sigma"] = 3.0
+    config.SUITE2P_DEFAULTS["nimg_init"] = 80
+    config.SUITE2P_DEFAULTS["batch_size"] = 120
+
+    options = config.build_suite2p_options(metadata)
+
+    assert options["1Preg"] is True
+    assert "one_photon_reg" not in options
+    assert options["smooth_sigma"] == pytest.approx(3.0)
+    assert options["nimg_init"] == 80
+    assert options["batch_size"] == 120

@@ -1,0 +1,96 @@
+.mask-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  background: var(--st-secondary-background-color, #1e1e1e);
+  border: 1px solid var(--st-border-color, #333);
+  border-radius: var(--st-base-radius, 6px);
+  padding: 0.75rem;
+  font-family: var(--st-font, sans-serif);
+  color: var(--st-text-color, #fafafa);
+  outline: none;
+}
+
+.mask-editor__toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.mask-editor__tools,
+.mask-editor__brush,
+.mask-editor__actions {
+  display: flex;
+  gap: 0.35rem;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.mask-editor button {
+  background: transparent;
+  border: 1px solid var(--st-border-color, #333);
+  color: inherit;
+  border-radius: var(--st-button-radius, 4px);
+  padding: 0.3rem 0.6rem;
+  cursor: pointer;
+  font-size: 0.85rem;
+}
+
+.mask-editor button:hover {
+  background: var(--st-primary-color, #4c8bf5);
+  color: white;
+}
+
+.mask-editor button.is-active {
+  background: var(--st-primary-color, #4c8bf5);
+  color: white;
+}
+
+.mask-editor__commit {
+  background: #2f7d32 !important;
+  color: white !important;
+  border-color: #2f7d32 !important;
+}
+
+.mask-editor__brush label {
+  font-size: 0.8rem;
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+}
+
+.mask-editor__stage {
+  position: relative;
+  width: 100%;
+  overflow: hidden;
+  border: 1px solid var(--st-border-color, #333);
+  background: #000;
+  aspect-ratio: 1 / 1;
+  touch-action: none;
+}
+
+.mask-editor__stage canvas {
+  position: absolute;
+  top: 0;
+  left: 0;
+  image-rendering: pixelated;
+  pointer-events: none;
+}
+
+.mask-editor__stage canvas[data-role="masks"].is-hidden {
+  opacity: 0;
+}
+
+.mask-editor__stage canvas[data-role="overlay"] {
+  pointer-events: auto;
+  cursor: crosshair;
+}
+
+.mask-editor__status {
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.8rem;
+  color: var(--st-text-color, #ccc);
+}

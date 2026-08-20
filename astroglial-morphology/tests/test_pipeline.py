@@ -688,6 +688,104 @@ class TestPipelineRegistrationReuse:
         assert mock_do_registration.call_args.args[1]["do_regmetrics"] is True
         assert not data_bin.exists()
 
+    @patch("astroglial_morphology.pipeline.lif_to_suite2p_binary")
+    @patch("astroglial_morphology.pipeline.do_registration")
+    @patch("astroglial_morphology.pipeline.Segmentation")
+    def test_force_registration_does_not_reconvert_fresh_lif_binaries(
+        self, mock_seg_class, mock_do_registration, mock_lif_convert, temp_dir
+    ):
+        lif_file = temp_dir / "test.lif"
+        lif_file.touch()
+        plane_path = temp_dir / "suite2p" / "plane0"
+        plane_path.mkdir(parents=True)
+        data_bin = plane_path / "data.bin"
+        data_bin.write_bytes(b"unregistered")
+        ops = {
+            "Ly": 8,
+            "Lx": 8,
+            "Lys": [8],
+            "Lxs": [8],
+            "nchannels": 1,
+            "nframes": 4,
+            "reg_file": str(data_bin),
+            "align_by_chan": 1,
+            "functional_chan": 1,
+            "do_regmetrics": False,
+        }
+        np.save(plane_path / "ops.npy", ops, allow_pickle=True)
+        mock_lif_convert.return_value = ops
+
+        pipeline = Pipeline(data_path=str(temp_dir))
+        pipeline.file_info = InputFileInfo(path=lif_file, format=InputFormat.LIF)
+        pipeline.metadata = Metadata(
+            nframes=4,
+            nchannels=1,
+            nplanes=1,
+            finterval=1.0,
+            pix_resolution=8.36,
+        )
+        pipeline.prepare_data()
+
+        performed = pipeline.run_registration(force=True)
+
+        assert performed is True
+        mock_lif_convert.assert_not_called()
+        mock_do_registration.assert_called_once()
+        assert mock_do_registration.call_args.args[1]["do_registration"] == 2
+        assert data_bin.read_bytes() == b"unregistered"
+
+    @patch("astroglial_morphology.pipeline.lif_to_suite2p_binary")
+    @patch("astroglial_morphology.pipeline.do_registration")
+    @patch("astroglial_morphology.pipeline.Segmentation")
+    def test_force_registration_restores_keep_movie_raw_instead_of_lif(
+        self, mock_seg_class, mock_do_registration, mock_lif_convert, temp_dir
+    ):
+        lif_file = temp_dir / "test.lif"
+        lif_file.touch()
+        suite2p_dir = temp_dir / "suite2p"
+        plane_path = suite2p_dir / "plane0"
+        plane_path.mkdir(parents=True)
+        data_bin = plane_path / "data.bin"
+        data_raw = plane_path / "data_raw.bin"
+        data_bin.write_bytes(b"registered")
+        data_raw.write_bytes(b"raw-frames")
+        ops = {
+            "Ly": 8,
+            "Lx": 8,
+            "Lys": [8],
+            "Lxs": [8],
+            "nchannels": 1,
+            "nframes": 4,
+            "reg_file": str(data_bin),
+            "align_by_chan": 1,
+            "functional_chan": 1,
+            "do_regmetrics": False,
+        }
+        np.save(plane_path / "ops.npy", ops, allow_pickle=True)
+        (suite2p_dir / ".registration_complete").touch()
+        mock_lif_convert.return_value = ops
+
+        pipeline = Pipeline(data_path=str(temp_dir))
+        pipeline.file_info = InputFileInfo(path=lif_file, format=InputFormat.LIF)
+        pipeline.metadata = Metadata(
+            nframes=4,
+            nchannels=1,
+            nplanes=1,
+            finterval=1.0,
+            pix_resolution=8.36,
+        )
+        pipeline.prepare_data()
+        mock_lif_convert.reset_mock()
+
+        performed = pipeline.run_registration(force=True)
+
+        assert performed is True
+        mock_lif_convert.assert_not_called()
+        mock_do_registration.assert_called_once()
+        assert data_bin.read_bytes() == b"raw-frames"
+        assert data_raw.read_bytes() == b"raw-frames"
+        assert not (suite2p_dir / ".registration_complete").exists()
+
 
 class TestPipelineChannelValidation:
     """Tests for the one/two-channel processing limit."""
@@ -938,6 +1036,152 @@ class TestPipelineRun:
         mock_do_registration.assert_called_once()
         mock_seg_class.return_value.segment_img.assert_not_called()
         assert results["masks"] is None
+
+    @patch("astroglial_morphology.pipeline.detect_input_file")
+    @patch("astroglial_morphology.pipeline.load_metadata")
+    @patch("astroglial_morphology.pipeline.do_registration")
+    @patch("astroglial_morphology.pipeline.check_registration_complete")
+    @patch("astroglial_morphology.pipeline.create_projections")
+    @patch("astroglial_morphology.pipeline.Segmentation")
+    @patch("astroglial_morphology.pipeline.classify_cells")
+    def test_skip_segmentation_loads_existing_masks(
+        self,
+        mock_classify,
+        mock_seg_class,
+        mock_create_projections,
+        mock_check_registration,
+        mock_do_registration,
+        mock_load_metadata,
+        mock_detect_file,
+        temp_dir,
+    ):
+        """Resume after mask correction without re-running Cellpose."""
+        tiff_file = temp_dir / "test.tif"
+        tiff_file.touch()
+        mock_detect_file.return_value = InputFileInfo(
+            path=tiff_file,
+            format=InputFormat.TIFF,
+        )
+        mock_load_metadata.return_value = Metadata(
+            nframes=200,
+            nchannels=1,
+            nplanes=1,
+            finterval=1.0,
+            pix_resolution=8.36,
+        )
+        mock_check_registration.return_value = True
+        mock_create_projections.return_value = {
+            "mean_ch0": np.random.rand(8, 8).astype(np.float32),
+        }
+        mock_classify.return_value = ([], {})
+
+        plane = temp_dir / "suite2p" / "plane0"
+        plane.mkdir(parents=True)
+        saved_masks = np.zeros((8, 8), dtype=np.int32)
+        saved_masks[2:5, 2:5] = 4
+        np.save(
+            plane / "mean_ch0_image_seg.npy",
+            {"masks": saved_masks},
+            allow_pickle=True,
+        )
+
+        pipeline = Pipeline(data_path=str(temp_dir))
+        results = pipeline.run(
+            skip_registration=True,
+            skip_segmentation=True,
+            export_correspondence=False,
+        )
+
+        mock_do_registration.assert_not_called()
+        mock_seg_class.return_value.segment_img.assert_not_called()
+        mock_classify.assert_called_once()
+        assert (pipeline.masks == saved_masks).all()
+        assert (results["masks"] == saved_masks).all()
+
+
+class TestExistingSegmentationResume:
+    def test_explicit_path_wins_when_candidates_are_ambiguous(self, temp_dir):
+        with patch("astroglial_morphology.pipeline.Segmentation"):
+            pipeline = Pipeline(data_path=str(temp_dir))
+        plane = temp_dir / "suite2p" / "plane0"
+        plane.mkdir(parents=True)
+        expected = plane / "mean_ch0_image_seg.npy"
+        selected = plane / "max_projection_ch0_image_seg.npy"
+        np.save(expected, {"masks": np.zeros((2, 2), dtype=np.int32)}, allow_pickle=True)
+        np.save(selected, {"masks": np.ones((2, 2), dtype=np.int32)}, allow_pickle=True)
+
+        found = pipeline._resolve_existing_seg_path(
+            "mean", "0", existing_seg_path=selected
+        )
+
+        assert found == selected.resolve()
+
+    def test_explicit_path_must_be_inside_plane(self, temp_dir):
+        with patch("astroglial_morphology.pipeline.Segmentation"):
+            pipeline = Pipeline(data_path=str(temp_dir))
+        plane = temp_dir / "suite2p" / "plane0"
+        plane.mkdir(parents=True)
+        outside = temp_dir / "outside_seg.npy"
+        np.save(outside, {"masks": np.zeros((2, 2), dtype=np.int32)}, allow_pickle=True)
+
+        with pytest.raises(ValueError, match="Suite2p plane directory"):
+            pipeline._resolve_existing_seg_path(
+                "mean", "0", existing_seg_path=outside
+            )
+
+    def test_resolve_falls_back_to_single_candidate(self, temp_dir):
+        with patch("astroglial_morphology.pipeline.Segmentation"):
+            pipeline = Pipeline(data_path=str(temp_dir))
+        plane = temp_dir / "suite2p" / "plane0"
+        plane.mkdir(parents=True)
+        fallback = plane / "custom_image_seg.npy"
+        np.save(fallback, {"masks": np.zeros((2, 2), dtype=np.int32)}, allow_pickle=True)
+
+        found = pipeline._resolve_existing_seg_path("mean", "0")
+        assert found == fallback
+
+    def test_resolve_errors_when_candidates_are_ambiguous(self, temp_dir):
+        with patch("astroglial_morphology.pipeline.Segmentation"):
+            pipeline = Pipeline(data_path=str(temp_dir))
+        plane = temp_dir / "suite2p" / "plane0"
+        plane.mkdir(parents=True)
+        np.save(
+            plane / "mean_ch0_image_seg.npy",
+            {"masks": np.zeros((2, 2), dtype=np.int32)},
+            allow_pickle=True,
+        )
+        np.save(
+            plane / "max_projection_ch0_image_seg.npy",
+            {"masks": np.ones((2, 2), dtype=np.int32)},
+            allow_pickle=True,
+        )
+
+        with pytest.raises(FileNotFoundError, match="Expected segmentation file"):
+            pipeline._resolve_existing_seg_path("mean", "1")
+
+    def test_load_existing_segmentation_sets_masks(self, temp_dir):
+        with patch("astroglial_morphology.pipeline.Segmentation"):
+            pipeline = Pipeline(data_path=str(temp_dir))
+        pipeline.metadata = Metadata(
+            nframes=10,
+            nchannels=1,
+            nplanes=1,
+            finterval=1.0,
+            pix_resolution=8.36,
+        )
+        plane = temp_dir / "suite2p" / "plane0"
+        plane.mkdir(parents=True)
+        masks = np.zeros((4, 4), dtype=np.int32)
+        masks[1, 1] = 3
+        np.save(
+            plane / "mean_ch0_image_seg.npy",
+            {"masks": masks},
+            allow_pickle=True,
+        )
+
+        loaded = pipeline._load_existing_segmentation("mean", "auto")
+        assert (loaded == masks).all()
+        assert pipeline.segmentation_base_path.endswith("mean_ch0_image")
 
 
 @pytest.mark.skipif(

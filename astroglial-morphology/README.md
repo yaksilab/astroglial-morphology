@@ -19,6 +19,38 @@ Then install this package from github repository
 pip install git+https://github.com/yaksilab/astroglial-morphology.git#subdirectory=astroglial-morphology
 ```
 
+## GUI
+
+A Streamlit GUI is available for interactive registration, segmentation, mask
+correction, and results inspection:
+
+```shell
+python -m astroglial_morphology.gui
+# or, if console scripts are installed:
+astroglial-morphology-gui
+```
+
+The GUI wraps the same Hydra pipeline. Every "Run" button spawns
+`python -m astroglial_morphology` in a child process and streams its log into
+the app so the browser stays responsive. Pages:
+
+- **Home** – validate a data folder and see what artifacts already exist.
+- **Registration** – Suite2p parameter form with common and advanced knobs;
+  QC charts (`xoff`/`yoff`/`corrXY`, badframes, mean/reference images) drawn
+  from `ops.npy` after each run.
+- **Segmentation** – Cellpose parameters, overlay preview of the resulting
+  masks.
+- **Mask correction** – in-browser canvas editor for the Cellpose `*_seg.npy`
+  file. Tools: select, brush, erase, split, pan. Saves back to the same file
+  and leaves a `*.orig` backup the first time.
+- **Inspect** – projections, mask overlays, and QC for any completed run,
+  without launching anything.
+- **Metadata** – groups the values recorded in `pipeline_metadata.json` and
+  highlights the parameters that differ from the package defaults.
+
+Classification and correspondence export are not exposed in the GUI; use the
+CLI when you need them.
+
 ## Usage
 The single-model workflow is the default. It accepts raw `.tif` or `.lif` data
 and runs Suite2p registration before segmentation. The command line is managed

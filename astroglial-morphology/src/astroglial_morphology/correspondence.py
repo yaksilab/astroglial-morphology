@@ -240,6 +240,14 @@ def _save_subsegmented_mask(
     template = np.load(template_seg_path, allow_pickle=True)
     metadata = template.item().copy()
     metadata["masks"] = subsegmented_mask
+    template_png = template_seg_path.with_name(
+        template_seg_path.name.replace("_seg.npy", ".png")
+    )
+    recorded = metadata.get("filename")
+    recorded_path = Path(str(recorded)) if recorded else None
+    if recorded_path is None or not recorded_path.is_file():
+        if template_png.is_file():
+            metadata["filename"] = str(template_png)
     destination.parent.mkdir(parents=True, exist_ok=True)
     np.save(destination, metadata)
 

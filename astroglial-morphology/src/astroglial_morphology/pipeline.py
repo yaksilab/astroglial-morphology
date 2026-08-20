@@ -4,8 +4,10 @@ import logging
 import json
 import os
 import platform
+import shutil
 import socket
 import sys
+import time
 from datetime import datetime
 from importlib import metadata as importlib_metadata
 from pathlib import Path
@@ -58,13 +60,31 @@ class Pipeline:
         "functional_chan",
         "nchannels",
         "do_regmetrics",
+        "maxregshift",
+        "nonrigid",
+        "two_step_registration",
+        "subpixel",
+        "smooth_sigma",
+        "smooth_sigma_time",
+        "th_badframes",
+        "tau",
+        "nimg_init",
+        "batch_size",
+        "block_size",
+        "snr_thresh",
+        "maxregshiftNR",
+        "1Preg",
+        "spatial_hp_reg",
+        "pre_smooth",
+        "spatial_taper",
+        "keep_movie_raw",
     )
     _REGISTRATION_INPUT_FILENAMES = (
-        "ops.npy",
         "data.bin",
         "data_chan2.bin",
         "data_raw.bin",
         "data_chan2_raw.bin",
+        "ops.npy",
     )
 
     def __init__(
@@ -144,6 +164,8 @@ class Pipeline:
         self.input_mode = "raw"
         self.plane_path: Optional[Path] = None
         self.ensemble_result: Optional[EnsembleSegmentationResult] = None
+        # Effective Cellpose eval kwargs recorded for parameter provenance.
+        self.segmentation_eval_params: Optional[Dict[str, Any]] = None
 
     @staticmethod
     def _normalize_trace_channels(
@@ -282,14 +304,18 @@ class Pipeline:
             )
             return False
 
-        mismatches = {
-            key: {
-                "completed": self._json_safe(existing_ops.get(key)),
-                "requested": self._json_safe(self.suite2p_options.get(key)),
-            }
-            for key in self._REGISTRATION_COMPATIBILITY_KEYS
-            if existing_ops.get(key) != self.suite2p_options.get(key)
-        }
+        mismatches = {}
+        for key in self._REGISTRATION_COMPATIBILITY_KEYS:
+            # An older ops.npy may not contain the newer expanded keys.  Only
+            # flag a drift when both sides actually recorded a value; otherwise
+            # trust the existing binaries so users are not forced to re-run.
+            if key not in existing_ops or key not in self.suite2p_options:
+                continue
+            if existing_ops.get(key) != self.suite2p_options.get(key):
+                mismatches[key] = {
+                    "completed": self._json_safe(existing_ops.get(key)),
+                    "requested": self._json_safe(self.suite2p_options.get(key)),
+                }
         if mismatches:
             logger.info(
                 "Registration configuration changed; rebuilding inputs: %s",
@@ -298,22 +324,68 @@ class Pipeline:
             return False
         return True
 
+    def _unlink_path(self, path: Path) -> None:
+        """Delete *path*, retrying briefly if Windows still has it locked."""
+
+        delays = (0.0, 0.2, 0.5, 1.0, 2.0)
+        last_exc: Optional[PermissionError] = None
+        for delay in delays:
+            if delay:
+                time.sleep(delay)
+            try:
+                path.unlink()
+                return
+            except FileNotFoundError:
+                return
+            except PermissionError as exc:
+                last_exc = exc
+                logger.warning("Retrying delete of locked file %s", path)
+        raise PermissionError(
+            f"Could not delete {path} because another process has it open. "
+            "Close the Streamlit GUI, Suite2p, or a previous pipeline run and retry."
+        ) from last_exc
+
     def _remove_registration_inputs(self) -> None:
         suite2p_dir = self._suite2p_output_dir()
         self._invalidate_registration_completion("registration is being rebuilt")
 
+        # Delete binaries before ops.npy. If a later unlink fails, prepare_data
+        # can still see a consistent converted pair instead of reconverting.
+        filenames = self._REGISTRATION_INPUT_FILENAMES
         for plane_path in suite2p_dir.glob("plane*"):
             if not plane_path.is_dir():
                 continue
-            for filename in self._REGISTRATION_INPUT_FILENAMES:
+            for filename in filenames:
                 input_path = plane_path / filename
                 if input_path.exists():
-                    input_path.unlink()
+                    self._unlink_path(input_path)
                     logger.debug("Removed stale registration input: %s", input_path)
+
+    def _restore_raw_movie_binaries(self) -> bool:
+        """Restore unregistered frames from keep_movie_raw copies when present."""
+
+        plane_path = self._suite2p_output_dir() / "plane0"
+        raw_path = plane_path / "data_raw.bin"
+        if not raw_path.is_file():
+            return False
+        shutil.copyfile(raw_path, plane_path / "data.bin")
+        chan2_raw = plane_path / "data_chan2_raw.bin"
+        if chan2_raw.is_file():
+            shutil.copyfile(chan2_raw, plane_path / "data_chan2.bin")
+        logger.info(
+            "Restored unregistered binaries from data_raw.bin; skipping source reconversion"
+        )
+        return True
 
     def _rebuild_registration_inputs(self) -> None:
         if self.file_info is None:
             raise RuntimeError("Input must be detected before rebuilding registration")
+
+        if self.file_info.format == InputFormat.LIF and self._restore_raw_movie_binaries():
+            self._invalidate_registration_completion(
+                "registration is being rebuilt from keep_movie_raw binaries"
+            )
+            return
 
         self._remove_registration_inputs()
         if self.file_info.format == InputFormat.LIF:
@@ -536,14 +608,20 @@ class Pipeline:
         registration_complete = check_registration_complete(
             self.data_path, self.suite2p_options
         )
+        if force:
+            self.suite2p_options["do_registration"] = 2
         if registration_complete and not force:
             if self._registration_configuration_matches():
                 logger.info("Registration already complete - skipping")
                 return False
             self._rebuild_registration_inputs()
-        elif force:
-            logger.info("Force registration requested; rebuilding inputs from source")
+        elif force and registration_complete:
+            logger.info("Force registration requested; restoring unregistered inputs")
             self._rebuild_registration_inputs()
+        elif force:
+            logger.info(
+                "Force registration requested; using binaries already prepared from source"
+            )
 
         logger.info("Starting motion correction...")
         logger.debug(f"Suite2p options: {self.suite2p_options}")
@@ -739,6 +817,7 @@ class Pipeline:
                 **segmentation_kwargs,
             )
             self.masks = self.ensemble_result.masks
+            self.segmentation_eval_params = dict(segmentation_kwargs)
         else:
             if self.segmenter is None:
                 raise RuntimeError("Single-model segmenter was not initialized")
@@ -756,6 +835,15 @@ class Pipeline:
                 diameter=diameter,
                 **segmentation_kwargs,
             )
+            segmenter_defaults = getattr(self.segmenter, "default_eval_params", None)
+            if not isinstance(segmenter_defaults, dict):
+                segmenter_defaults = dict(self.config.SEGMENTATION_DEFAULTS)
+            effective_eval = {
+                **segmenter_defaults,
+                **segmentation_kwargs,
+                "diameter": diameter,
+            }
+            self.segmentation_eval_params = effective_eval
 
         self._link_cellpose_mask_to_source_image(
             Path(f"{save_path}_seg.npy"), source_image_path
@@ -768,6 +856,104 @@ class Pipeline:
         if interactive_correction:
             self._prompt_for_manual_correction(save_path)
 
+        return self.masks
+
+    def _resolve_existing_seg_path(
+        self,
+        projection_type: str,
+        segmentation_channel: str,
+        existing_seg_path: Optional[Union[str, Path]] = None,
+    ) -> Path:
+        """Locate a saved Cellpose ``*_seg.npy`` to resume after correction."""
+
+        plane = self._plane_path()
+        if existing_seg_path is not None:
+            requested = Path(existing_seg_path).expanduser()
+            if not requested.is_absolute():
+                requested = plane / requested
+            requested = requested.resolve()
+            if requested.parent != plane.resolve():
+                raise ValueError(
+                    "segmentation.existing_seg_path must refer to a file in "
+                    f"the Suite2p plane directory: {plane}"
+                )
+            if not requested.name.endswith("_seg.npy"):
+                raise ValueError(
+                    "segmentation.existing_seg_path must name a *_seg.npy file"
+                )
+            if not requested.is_file():
+                raise FileNotFoundError(
+                    f"Selected segmentation file does not exist: {requested}"
+                )
+            return requested
+
+        if segmentation_channel == "auto":
+            segmentation_channel = (
+                "1" if self._available_channel_count() > 1 else "0"
+            )
+        if segmentation_channel == "both":
+            suffix = "both"
+        else:
+            suffix = f"ch{int(segmentation_channel)}"
+        expected = plane / f"{projection_type}_{suffix}_image_seg.npy"
+        if expected.is_file():
+            return expected
+
+        candidates = sorted(
+            path
+            for path in plane.glob("*_seg.npy")
+            if path.name != "subsegmented_masks_seg.npy"
+        )
+        if len(candidates) == 1:
+            logger.warning(
+                "Expected %s; using existing %s instead",
+                expected.name,
+                candidates[0].name,
+            )
+            return candidates[0]
+        if candidates:
+            names = ", ".join(path.name for path in candidates)
+            raise FileNotFoundError(
+                f"Expected segmentation file {expected.name} in {plane}. "
+                f"Found: {names}. Match segmentation.projection and "
+                "segmentation.channel to the file you corrected."
+            )
+        raise FileNotFoundError(
+            f"No segmentation file found at {expected}. "
+            "Run automatic segmentation and save mask corrections first."
+        )
+
+    def _load_existing_segmentation(
+        self,
+        projection_type: str,
+        segmentation_channel: str,
+        existing_seg_path: Optional[Union[str, Path]] = None,
+    ) -> np.ndarray:
+        """Load masks from disk instead of re-running Cellpose."""
+
+        if self.metadata is None:
+            raise RuntimeError("Metadata is required for segmentation")
+        if segmentation_channel == "auto":
+            segmentation_channel = (
+                "1" if self._available_channel_count() > 1 else "0"
+            )
+        self.segmentation_channel = segmentation_channel
+        mask_path = self._resolve_existing_seg_path(
+            projection_type, segmentation_channel, existing_seg_path
+        )
+        payload = np.load(mask_path, allow_pickle=True).item()
+        self.masks = np.asarray(payload["masks"])
+        self.segmentation_base_path = str(
+            mask_path.with_name(mask_path.name.replace("_seg.npy", ""))
+        )
+        self.ensemble_result = None
+        labels = np.unique(self.masks)
+        labels = labels[labels != 0]
+        logger.info(
+            "Loaded existing segmentation %s (%d ROIs)",
+            mask_path,
+            int(labels.size),
+        )
         return self.masks
 
     def _prompt_for_manual_correction(self, seg_path: str) -> None:
@@ -1111,6 +1297,148 @@ class Pipeline:
             "suite2p_timing": self._json_safe(ops.get("timing")),
         }
 
+    _REGISTRATION_PARAM_KEYS = (
+        "do_registration",
+        "two_step_registration",
+        "nonrigid",
+        "maxregshift",
+        "subpixel",
+        "smooth_sigma",
+        "smooth_sigma_time",
+        "th_badframes",
+        "tau",
+        "align_by_chan",
+        "functional_chan",
+        "batch_size",
+        "nimg_init",
+        "do_regmetrics",
+        "reg_tif",
+        "reg_tif_chan2",
+        "block_size",
+        "snr_thresh",
+        "maxregshiftNR",
+        "1Preg",
+        "spatial_hp_reg",
+        "pre_smooth",
+        "spatial_taper",
+        "keep_movie_raw",
+    )
+
+    _SEGMENTATION_PARAM_KEYS = (
+        "flow_threshold",
+        "cellprob_threshold",
+        "diameter",
+        "augment",
+        "resample",
+        "min_size",
+    )
+
+    _RUNTIME_PARAM_KEYS = (
+        "use_gpu",
+        "manual_correction",
+        "alignment_only",
+        "export_correspondence",
+        "registration_channel",
+        "segmentation_channel",
+        "segmentation_projection",
+        "reg_tif",
+        "segmentation_mode",
+        "ensemble_profile",
+    )
+
+    def _parameter_snapshot(self) -> Dict[str, Any]:
+        """Collect resolved parameters plus defaults and overrides.
+
+        This lets the GUI show default vs non-default values without inspecting
+        the CLI arguments used to launch the run.
+        """
+
+        defaults_config = PipelineConfig()
+        suite2p_defaults = defaults_config.SUITE2P_DEFAULTS
+        seg_defaults = defaults_config.SEGMENTATION_DEFAULTS
+
+        registration_used: Dict[str, Any] = {}
+        registration_defaults: Dict[str, Any] = {}
+        if self.suite2p_options is not None:
+            default_key_aliases = {"1Preg": "one_photon_reg"}
+            for key in self._REGISTRATION_PARAM_KEYS:
+                if key in self.suite2p_options:
+                    registration_used[key] = self.suite2p_options.get(key)
+                default_key = default_key_aliases.get(key, key)
+                if default_key in suite2p_defaults:
+                    registration_defaults[key] = suite2p_defaults.get(default_key)
+
+        segmentation_used: Dict[str, Any] = {}
+        segmentation_defaults_snapshot: Dict[str, Any] = {}
+        eval_params = self.segmentation_eval_params or {}
+        for key in self._SEGMENTATION_PARAM_KEYS:
+            if key in eval_params:
+                segmentation_used[key] = eval_params.get(key)
+            if key in seg_defaults:
+                segmentation_defaults_snapshot[key] = seg_defaults.get(key)
+        # Normalization sub-dict is treated as a single grouped parameter for
+        # display purposes; store the used and default versions verbatim.
+        if "normalize" in eval_params:
+            segmentation_used["normalize"] = eval_params["normalize"]
+        if "normalize" in seg_defaults:
+            segmentation_defaults_snapshot["normalize"] = seg_defaults["normalize"]
+
+        runtime_used = {
+            "use_gpu": self.use_gpu,
+            "manual_correction": self.manual_correction,
+            "alignment_only": self.alignment_only,
+            "export_correspondence": self.export_correspondence,
+            "registration_channel": self.registration_channel,
+            "segmentation_channel": self.segmentation_channel,
+            "segmentation_projection": self.segmentation_projection,
+            "reg_tif": self.reg_tif,
+            "segmentation_mode": self.segmentation_mode,
+            "ensemble_profile": self.ensemble_profile,
+        }
+        runtime_defaults = {
+            "use_gpu": False,
+            "manual_correction": False,
+            "alignment_only": False,
+            "export_correspondence": True,
+            "registration_channel": 0,
+            "segmentation_channel": "auto",
+            "segmentation_projection": "mean",
+            "reg_tif": False,
+            "segmentation_mode": "single",
+            "ensemble_profile": DEFAULT_PROFILE_NAME,
+        }
+
+        parameters = {
+            "registration": registration_used,
+            "segmentation": segmentation_used,
+            "runtime": runtime_used,
+        }
+        parameter_defaults = {
+            "registration": registration_defaults,
+            "segmentation": segmentation_defaults_snapshot,
+            "runtime": runtime_defaults,
+        }
+        parameter_overrides = {}
+        for group, used in parameters.items():
+            defaults_for_group = parameter_defaults.get(group, {})
+            differences = {}
+            for key, value in used.items():
+                if key not in defaults_for_group:
+                    continue
+                if defaults_for_group[key] != value:
+                    differences[key] = {
+                        "default": defaults_for_group[key],
+                        "used": value,
+                    }
+            if differences:
+                parameter_overrides[group] = differences
+
+        return {
+            "parameters": self._json_safe(parameters),
+            "parameter_defaults": self._json_safe(parameter_defaults),
+            "parameter_overrides": self._json_safe(parameter_overrides),
+        }
+
     def write_pipeline_metadata(self) -> None:
         if self.suite2p_options is None:
             return
@@ -1207,6 +1535,10 @@ class Pipeline:
             "platform": platform.platform(),
             "created_at": datetime.now().isoformat(timespec="seconds"),
             "hostname": socket.gethostname(),
+            "segmentation_eval_params": self._json_safe(
+                self.segmentation_eval_params
+            ),
+            **self._parameter_snapshot(),
         }
         payload = self._json_safe(payload)
         metadata_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
@@ -1227,6 +1559,8 @@ class Pipeline:
         trace_channels: Optional[Union[str, Sequence[int]]] = None,
         do_regmetrics: bool = False,
         alignment_only: bool = False,
+        skip_segmentation: bool = False,
+        existing_seg_path: Optional[Union[str, Path]] = None,
     ) -> Dict[str, Any]:
         """
         Run the complete pipeline.
@@ -1234,7 +1568,7 @@ class Pipeline:
         Args:
             skip_registration: If True, unconditionally skip registration (deprecated, auto-detected now)
             force_registration: If True, run registration even if already complete
-            manual_correction: If True, load manually corrected masks
+            manual_correction: If True, pause for interactive mask correction
             export_correspondence: Build correspondence/trace outputs when True
             correspondence_segment_length: Segment length in pixels for subsegmentation
             correspondence_delta_x: X-axis grouping distance for correspondence alignment
@@ -1244,6 +1578,8 @@ class Pipeline:
             trace_channels: Zero-based channels to export traces for
             do_regmetrics: Whether Suite2p should compute optional registration metrics
             alignment_only: Stop after registration and projection creation
+            skip_segmentation: Load existing ``*_seg.npy`` masks instead of running Cellpose
+            existing_seg_path: Exact ``*_seg.npy`` file to load when skipping segmentation
 
         Returns:
             Dictionary with pipeline results
@@ -1305,12 +1641,20 @@ class Pipeline:
                 "correspondence": None,
             }
 
-        # Step 6: Segment cells (with optional interactive correction)
-        self.segment_cells(
-            interactive_correction=manual_correction,
-            projection_type=segmentation_projection,
-            segmentation_channel=self.segmentation_channel,
-        )
+        # Step 6: Segment cells, or resume from a saved (possibly corrected) mask
+        if skip_segmentation:
+            logger.info("Skipping Cellpose; loading existing segmentation")
+            self._load_existing_segmentation(
+                projection_type=segmentation_projection,
+                segmentation_channel=self.segmentation_channel,
+                existing_seg_path=existing_seg_path,
+            )
+        else:
+            self.segment_cells(
+                interactive_correction=manual_correction,
+                projection_type=segmentation_projection,
+                segmentation_channel=self.segmentation_channel,
+            )
         # Refresh metadata now that the final (single or combined) output and
         # ensemble mask statistics are known.
         self.write_pipeline_metadata()

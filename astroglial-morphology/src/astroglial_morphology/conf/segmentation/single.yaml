@@ -5,4 +5,6 @@ ensemble_config: null
 model_cache_dir: ${oc.decode:${oc.env:ASTROGLIAL_MODEL_CACHE_DIR,null}}
 projection: mean
 channel: auto
+skip: false
+existing_seg_path: null
 
