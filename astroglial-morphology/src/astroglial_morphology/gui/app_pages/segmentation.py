@@ -53,7 +53,7 @@ overrides_preview = build_hydra_overrides(
         **default_registration_params(),
     },
     segmentation_values=values,
-    data_path=str(status.data_path),
+    data_path=str(status.pipeline_data_path),
     alignment_only=False,
     skip_registration=True,
     correspondence_enabled=False,

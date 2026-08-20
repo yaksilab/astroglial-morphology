@@ -80,6 +80,14 @@ class ExperimentStatus:
     def is_valid_input(self) -> bool:
         return self.input_mode is not None
 
+    @property
+    def pipeline_data_path(self) -> Path:
+        """Return the path the command-line pipeline should consume."""
+
+        if self.input_mode == "suite2p" and self.plane_dir is not None:
+            return self.plane_dir
+        return self.data_path
+
 
 def is_experiment_folder(path: str | Path) -> bool:
     """Return whether *path* is a directory the pipeline could consume."""
@@ -88,6 +96,9 @@ def is_experiment_folder(path: str | Path) -> bool:
     if not p.is_dir():
         return False
     if is_suite2p_plane(p):
+        return True
+    candidate_plane = p / "suite2p" / "plane0"
+    if is_suite2p_plane(candidate_plane):
         return True
     try:
         detect_input_file(str(p))
@@ -241,6 +252,7 @@ def describe_experiment(data_path: str | Path) -> ExperimentStatus:
         status.plane_dir = p
         status.suite2p_dir = p.parent if p.parent.name == "suite2p" else None
     else:
+        detection_error: Optional[str] = None
         try:
             file_info = detect_input_file(str(p))
             status.input_file = file_info
@@ -248,15 +260,19 @@ def describe_experiment(data_path: str | Path) -> ExperimentStatus:
                 "lif" if file_info.format == InputFormat.LIF else "tif"
             )
         except FileNotFoundError as exc:
-            status.errors.append(str(exc))
+            detection_error = str(exc)
         except Exception as exc:  # pragma: no cover - defensive
-            status.errors.append(f"Failed to detect input file: {exc}")
+            detection_error = f"Failed to detect input file: {exc}"
         candidate_suite2p = p / "suite2p"
         if candidate_suite2p.is_dir():
             status.suite2p_dir = candidate_suite2p
             candidate_plane = candidate_suite2p / "plane0"
             if candidate_plane.is_dir():
                 status.plane_dir = candidate_plane
+                if status.input_mode is None and is_suite2p_plane(candidate_plane):
+                    status.input_mode = "suite2p"
+        if status.input_mode is None and detection_error is not None:
+            status.errors.append(detection_error)
 
     plane_dir = status.plane_dir
     if plane_dir is not None:

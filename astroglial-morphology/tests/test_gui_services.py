@@ -82,7 +82,18 @@ class TestExperimentInventory:
         status = describe_experiment(temp_dir)
         assert status.input_mode == "tif"
         assert status.plane_dir == plane
+        assert status.pipeline_data_path == temp_dir
         assert status.has_registration is True
+
+    def test_describe_root_with_only_suite2p_plane(self, temp_dir):
+        plane = _make_plane(temp_dir)
+
+        status = describe_experiment(temp_dir)
+
+        assert status.input_mode == "suite2p"
+        assert status.is_valid_input is True
+        assert status.pipeline_data_path == plane
+        assert status.errors == []
 
     def test_describe_missing_input(self, temp_dir):
         status = describe_experiment(temp_dir)
@@ -92,7 +103,8 @@ class TestExperimentInventory:
     def test_is_experiment_folder(self, temp_dir):
         assert is_experiment_folder(temp_dir) is False
         plane = _make_plane(temp_dir)
-        # Raw input alone should qualify.
+        assert is_experiment_folder(temp_dir) is True
+        # Raw input should also qualify.
         (temp_dir / "test.tif").touch()
         assert is_experiment_folder(temp_dir) is True
         # Direct plane0 folder should also qualify.
