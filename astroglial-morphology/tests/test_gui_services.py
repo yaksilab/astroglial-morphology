@@ -412,3 +412,21 @@ class TestJobLogging:
         assert handle.tail_log(max_lines=2) == "two\nthree\n"
         assert handle.latest_line() == "three"
 
+
+class TestMaskEditorLifecycle:
+    def test_renderer_removes_registered_event_listeners(self):
+        editor_path = (
+            Path(__file__).parents[1]
+            / "src"
+            / "astroglial_morphology"
+            / "gui"
+            / "components"
+            / "mask_editor"
+            / "editor.js"
+        )
+        source = editor_path.read_text(encoding="utf-8")
+
+        assert "return () =>" in source
+        assert "removeEventListener('keydown', handleKeyDown)" in source
+        assert "removeEventListener('wheel', wheelZoom, wheelOptions)" in source
+

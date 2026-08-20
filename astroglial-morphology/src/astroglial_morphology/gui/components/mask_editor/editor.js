@@ -654,21 +654,34 @@ export default function(component) {
     setInfo("Saved");
   };
 
-  overlayCanvas.addEventListener('pointerdown', pointerDown);
-  overlayCanvas.addEventListener('pointermove', pointerMove);
-  overlayCanvas.addEventListener('pointerup', pointerUp);
-  overlayCanvas.addEventListener('pointercancel', pointerUp);
-  overlayCanvas.addEventListener('wheel', wheelZoom, { passive: false });
-
-  parentElement.addEventListener('keydown', (evt) => {
+  function handleKeyDown(evt) {
     if (evt.target.tagName === 'INPUT') return;
     if (evt.key === 's' || evt.key === 'S') setTool('select');
     else if (evt.key === 'b' || evt.key === 'B') setTool('brush');
     else if (evt.key === 'e' || evt.key === 'E') setTool('erase');
+    else if (evt.key === 'x' || evt.key === 'X') setTool('split');
     else if (evt.key === 'o' || evt.key === 'O') toggleOverlay();
     else if (evt.key === ' ') setTool('pan');
     else if (evt.key === 'Delete' || evt.key === 'Backspace') deleteSelection();
     else if ((evt.ctrlKey || evt.metaKey) && evt.key === 'z') undo();
     else if ((evt.ctrlKey || evt.metaKey) && evt.key === 'y') redo();
-  });
+  }
+
+  const wheelOptions = { passive: false };
+  overlayCanvas.addEventListener('pointerdown', pointerDown);
+  overlayCanvas.addEventListener('pointermove', pointerMove);
+  overlayCanvas.addEventListener('pointerup', pointerUp);
+  overlayCanvas.addEventListener('pointercancel', pointerUp);
+  overlayCanvas.addEventListener('wheel', wheelZoom, wheelOptions);
+  parentElement.addEventListener('keydown', handleKeyDown);
+
+  return () => {
+    image.onload = null;
+    overlayCanvas.removeEventListener('pointerdown', pointerDown);
+    overlayCanvas.removeEventListener('pointermove', pointerMove);
+    overlayCanvas.removeEventListener('pointerup', pointerUp);
+    overlayCanvas.removeEventListener('pointercancel', pointerUp);
+    overlayCanvas.removeEventListener('wheel', wheelZoom, wheelOptions);
+    parentElement.removeEventListener('keydown', handleKeyDown);
+  };
 }
