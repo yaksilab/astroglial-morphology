@@ -365,13 +365,18 @@ class TestMaskEditorCodec:
 
 
 class TestJobLogging:
-    def test_hydra_log_override_uses_posix_path(self, tmp_path):
-        from astroglial_morphology.gui.services.jobs import _hydra_log_override
+    def test_child_command_does_not_write_the_capture_log(self):
+        from astroglial_morphology.gui.services.jobs import _build_command
 
-        log_path = tmp_path / "run.log"
-        override = _hydra_log_override(log_path)
-        assert override.startswith("logging.log_file=")
-        assert "\\" not in override.split("=", 1)[1]
+        command = _build_command("python", ["input.data_path=/experiment"])
+
+        assert command == [
+            "python",
+            "-m",
+            "astroglial_morphology",
+            "input.data_path=/experiment",
+        ]
+        assert not any(item.startswith("logging.log_file=") for item in command)
 
     def test_pump_splits_carriage_returns(self, tmp_path):
         import io

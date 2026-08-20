@@ -66,6 +66,12 @@ def _pump_output(
             stream.close()
         except OSError:
             pass
+        with lock:
+            try:
+                log_fp.flush()
+                log_fp.close()
+            except (OSError, ValueError):
+                pass
 
 
 @dataclass
@@ -102,21 +108,18 @@ class JobHandle:
     def poll(self) -> JobStatus:
         """Update :attr:`status` based on the child process state."""
 
-        with self._lock:
-            if self.process is None:
-                return self.status
-            code = self.process.poll()
-            if code is None:
+        process = self.process
+        if process is None:
+            return self.status
+        code = process.poll()
+        if code is None:
+            with self._lock:
                 if self.status == JobStatus.PENDING:
                     self.status = JobStatus.RUNNING
                 return self.status
-            if self._pump is not None:
-                self._pump.join(timeout=0.2)
-            if self._log_fp is not None:
-                try:
-                    self._log_fp.flush()
-                except OSError:
-                    pass
+        if self._pump is not None:
+            self._pump.join(timeout=0.2)
+        with self._lock:
             self.return_code = code
             if self.status == JobStatus.CANCELLED:
                 self.stopped_at = self.stopped_at or datetime.now()
@@ -178,10 +181,10 @@ def _resolve_log_dir(data_path: Path) -> Path:
     return log_dir
 
 
-def _hydra_log_override(log_path: Path) -> str:
-    """Point the pipeline file logger at *log_path* without breaking Hydra parsing."""
+def _build_command(executable: str, overrides: Iterable[str]) -> List[str]:
+    """Build a pipeline command without assigning the capture log to the child."""
 
-    return f"logging.log_file={log_path.resolve().as_posix()}"
+    return [executable, "-m", "astroglial_morphology", *list(overrides)]
 
 
 def run_pipeline_subprocess(
@@ -199,19 +202,11 @@ def run_pipeline_subprocess(
     log_path = log_dir / f"{time.strftime('%Y%m%d-%H%M%S')}-{label}-{job_id}.log"
     executable = python_executable or sys.executable
 
-    command = [
-        executable,
-        "-m",
-        "astroglial_morphology",
-        *list(overrides),
-        _hydra_log_override(log_path),
-    ]
+    command = _build_command(executable, overrides)
 
     env = os.environ.copy()
     env["PYTHONUNBUFFERED"] = "1"
     env["PYTHONIOENCODING"] = "utf-8"
-    env["ASTROGLIAL_LOGFILE"] = str(log_path)
-
     log_fp = log_path.open("w", encoding="utf-8", buffering=1)
     handle = JobHandle(
         job_id=job_id,
