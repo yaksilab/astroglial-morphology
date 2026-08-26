@@ -209,6 +209,11 @@ def find_segmentation_files(plane_dir: Path) -> List[SegmentationFile]:
         return []
     results: List[SegmentationFile] = []
     for seg_path in sorted(plane_dir.glob("*_seg.npy")):
+        # macOS creates AppleDouble metadata sidecars (``._*``) on filesystems
+        # such as ExFAT.  They can share the ``*_seg.npy`` suffix but are not
+        # NumPy files and must never be passed to ``np.load``.
+        if seg_path.name.startswith("._"):
+            continue
         image_path = resolve_seg_image_path(seg_path, plane_dir)
         image_stem = image_path.stem if image_path is not None else _seg_stem(seg_path)
         projection, channel = _parse_projection_from_name(image_stem)

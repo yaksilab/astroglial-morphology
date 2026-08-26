@@ -144,6 +144,18 @@ class TestExperimentInventory:
         subseg = by_name["subsegmented_masks_seg.npy"]
         assert subseg.image_path == plane / "mean_ch0_image.png"
 
+    def test_ignores_appledouble_segmentation_sidecars(self, temp_dir):
+        plane = _make_plane(temp_dir)
+        (plane / "._mean_ch0_image_seg.npy").write_bytes(
+            b"AppleDouble metadata, not a NumPy file"
+        )
+
+        status = describe_experiment(plane)
+
+        assert [
+            seg_file.seg_path.name for seg_file in status.segmentation_files
+        ] == ["mean_ch0_image_seg.npy"]
+
 
 class TestParameterCatalog:
     def test_registration_defaults_match_catalog(self):
