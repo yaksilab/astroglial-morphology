@@ -160,6 +160,75 @@ def load_seg_masks(seg_path: Path) -> np.ndarray:
     return np.asarray(load_seg_file(seg_path)["masks"])
 
 
+def find_disconnected_mask_labels(masks: np.ndarray) -> Dict[int, int]:
+    """Return labels spanning multiple 8-connected regions without relabeling."""
+    from skimage.measure import label
+
+    array = np.asarray(masks)
+    if array.ndim != 2:
+        raise ValueError("Cell masks must be a 2D label image")
+    connected = label(array, background=0, connectivity=2)
+    component_ids, first_indices = np.unique(connected, return_index=True)
+    parent_labels = array.ravel()[first_indices[component_ids != 0]]
+    labels, counts = np.unique(parent_labels, return_counts=True)
+    return {int(cell): int(count) for cell, count in zip(labels, counts) if count > 1}
+
+
+def _prepare_cellpose_seg_payload(
+    payload: Dict[str, Any], masks: np.ndarray, manual_correction: bool
+) -> Dict[str, Any]:
+    """Synchronize a 2D edited label image with Cellpose's per-cell metadata."""
+    from cellpose.utils import masks_to_outlines
+
+    array = np.asarray(masks)
+    if array.ndim != 2 or not all(array.shape):
+        raise ValueError("Cell masks must be a nonempty 2D label image")
+    if array.dtype.kind not in "biu" or np.any(array < 0):
+        raise ValueError("Cell masks must contain nonnegative integer labels")
+
+    values, inverse = np.unique(array, return_inverse=True)
+    cell_labels = values[values > 0]
+    remap = np.zeros(len(values), dtype=np.int32)
+    remap[values > 0] = np.arange(1, len(cell_labels) + 1, dtype=np.int32)
+    normalized = remap[inverse].reshape(array.shape)
+
+    previous = np.asarray(payload.get("masks", []))
+    previous_manual = np.asarray(payload.get("ismanual", []), dtype=bool).ravel()
+    ismanual = np.zeros(len(cell_labels), dtype=bool)
+    for index, old_label in enumerate(cell_labels):
+        # Preserve provenance for unchanged cells, including a surviving cell
+        # whose ID shifts after deletion. Newly drawn/changed cells are manual.
+        unchanged = previous.shape == array.shape and np.array_equal(
+            previous == old_label, array == old_label
+        )
+        was_manual = (
+            previous_manual[int(old_label) - 1]
+            if int(old_label) <= len(previous_manual)
+            else bool(payload.get("manual_edited", False))
+        )
+        ismanual[index] = was_manual if unchanged else bool(manual_correction)
+
+    result = payload.copy()
+    result.update(
+        masks=normalized,
+        outlines=masks_to_outlines(normalized).astype(np.int32) * normalized,
+        ismanual=ismanual,
+        zdraw=[None] * len(cell_labels),
+        manual=normalized.astype(bool),
+        manual_edited=bool(manual_correction),
+    )
+    # Colors are indexed by label - 1. Preserve them only if every surviving
+    # ID has a valid entry; otherwise let Cellpose assign its standard palette.
+    colors = np.asarray(payload.get("colors", []))
+    if colors.ndim == 2 and colors.shape[1] == 3 and (
+        not len(cell_labels) or int(cell_labels[-1]) <= len(colors)
+    ):
+        result["colors"] = colors[cell_labels.astype(np.int64) - 1].copy()
+    else:
+        result.pop("colors", None)
+    return result
+
+
 def save_seg_masks(
     seg_path: Path,
     masks: np.ndarray,
@@ -167,7 +236,7 @@ def save_seg_masks(
     manual_correction: bool = True,
     backup: bool = True,
 ) -> Path:
-    """Persist edited *masks* back into a Cellpose seg file.
+    """Persist edited masks with consecutive Cellpose IDs and fresh metadata.
 
     A one-time ``.orig`` backup is written the first time we edit a file so
     users can revert manual corrections.
@@ -180,14 +249,13 @@ def save_seg_masks(
     else:
         payload = {}
 
+    payload = _prepare_cellpose_seg_payload(payload, masks, manual_correction)
+
     if backup and path.is_file():
         backup_path = path.with_suffix(path.suffix + ".orig")
         if not backup_path.exists():
             backup_path.write_bytes(path.read_bytes())
 
-    payload["masks"] = np.asarray(masks, dtype=np.int32)
-    payload["manual"] = np.asarray(masks, dtype=bool)
-    payload["manual_edited"] = bool(manual_correction)
     np.save(path, payload, allow_pickle=True)
     return path
 

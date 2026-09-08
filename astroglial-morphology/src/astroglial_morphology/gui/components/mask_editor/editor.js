@@ -31,7 +31,7 @@ export default function(component) {
     masks: null,
     tool: "select",
     brushSize: 3,
-    newLabel: false,
+    newLabel: true,
     alpha: 0.45,
     overlayOn: true,
     selection: new Set(),
@@ -69,6 +69,7 @@ export default function(component) {
   brushValEl.textContent = state.brushSize;
   alphaEl.value = Math.round(state.alpha * 100);
   alphaValEl.textContent = alphaEl.value;
+  newLabelEl.checked = state.newLabel;
 
   const image = new Image();
   image.decoding = "async";
@@ -400,6 +401,10 @@ export default function(component) {
   }
 
   function pointerDown(evt) {
+    if (state.tool === "brush" && !state.newLabel && state.selection.size !== 1) {
+      setInfo("Select exactly one cell to extend, or enable New cell for each outline");
+      return;
+    }
     overlayCanvas.setPointerCapture(evt.pointerId);
     state.isPointerDown = true;
     state.lastPointer = { x: evt.clientX, y: evt.clientY };
@@ -423,7 +428,7 @@ export default function(component) {
       state.strokePoints = [];
       state.lastPaint = p;
       if (state.tool === "brush") {
-        if (state.newLabel || state.selection.size === 0) {
+        if (state.newLabel) {
           state.strokeLabel = nextLabel();
         } else {
           state.strokeLabel = Math.min(...state.selection);
@@ -581,14 +586,43 @@ export default function(component) {
         collected.push(idx);
         const x = idx % state.width;
         const y = Math.floor(idx / state.width);
-        if (x > 0) stack.push(idx - 1);
-        if (x < state.width - 1) stack.push(idx + 1);
-        if (y > 0) stack.push(idx - state.width);
-        if (y < state.height - 1) stack.push(idx + state.width);
+        // Diagonally touching pixels belong to one region, as in the
+        // Python mask validation. Never wrap across image row boundaries.
+        for (let dy = -1; dy <= 1; dy += 1) {
+          for (let dx = -1; dx <= 1; dx += 1) {
+            const nx = x + dx, ny = y + dy;
+            if ((dx || dy) && nx >= 0 && nx < state.width && ny >= 0 && ny < state.height) {
+              const neighbor = ny * state.width + nx;
+              if (!visited[neighbor] && state.masks[neighbor] === label) stack.push(neighbor);
+            }
+          }
+        }
       }
       if (collected.length) components.push(collected);
     }
     return components;
+  }
+
+  function separateRegions() {
+    if (state.selection.size !== 1) {
+      setInfo("Select exactly one cell label to separate its disconnected regions");
+      return;
+    }
+    const target = Array.from(state.selection)[0];
+    const components = floodFillLabel(target);
+    if (components.length <= 1) {
+      setInfo(`Cell ${target} already has one connected region`);
+      return;
+    }
+    saveHistory();
+    // Keep the original ID on the largest region; do not change boundaries.
+    components.sort((a, b) => b.length - a.length);
+    for (const pixels of components.slice(1)) {
+      const label = nextLabel();
+      for (const idx of pixels) state.masks[idx] = label;
+    }
+    redrawMask();
+    setInfo(`Separated cell ${target} into ${components.length} cells; boundaries unchanged`);
   }
 
   function wheelZoom(evt) {
@@ -610,7 +644,9 @@ export default function(component) {
       .querySelectorAll('.mask-editor__tool')
       .forEach((btn) => btn.classList.toggle('is-active', btn.dataset.tool === name));
     if (name === "brush") {
-      setInfo("Draw an outline; release to fill the ROI");
+      setInfo(state.newLabel
+        ? "Draw an outline; release to create a new cell"
+        : "Draw an outline to extend the selected cell");
     } else {
       setInfo(`Tool: ${name}`);
     }
@@ -632,6 +668,7 @@ export default function(component) {
   };
   newLabelEl.onchange = () => {
     state.newLabel = newLabelEl.checked;
+    if (state.tool === "brush") setTool("brush");
   };
   if (overlayToggleEl) {
     overlayToggleEl.onclick = toggleOverlay;
@@ -642,6 +679,7 @@ export default function(component) {
   parentElement.querySelector('[data-role="redo"]').onclick = redo;
   parentElement.querySelector('[data-role="delete"]').onclick = deleteSelection;
   parentElement.querySelector('[data-role="merge"]').onclick = mergeSelection;
+  parentElement.querySelector('[data-role="separate"]').onclick = separateRegions;
   parentElement.querySelector('[data-role="commit"]').onclick = () => {
     const payload = {
       masks_b64: encodeMaskB64(),
