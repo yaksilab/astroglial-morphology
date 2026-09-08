@@ -23,7 +23,11 @@ from astroglial_morphology.gui.services.parameters import (
     default_registration_params,
     default_segmentation_params,
 )
-from astroglial_morphology.gui.services.results import load_seg_file, save_seg_masks
+from astroglial_morphology.gui.services.results import (
+    find_disconnected_mask_labels,
+    load_seg_file,
+    save_seg_masks,
+)
 
 _PIPELINE_PAGE = str(Path(__file__).with_name("pipeline.py"))
 
@@ -53,6 +57,16 @@ if seg_file.image_path is None or not seg_file.image_path.is_file():
 payload = load_seg_file(seg_file.seg_path)
 masks = np.asarray(payload["masks"], dtype=np.int32)
 image = mpimg.imread(str(seg_file.image_path))
+
+disconnected = find_disconnected_mask_labels(masks)
+if disconnected:
+    details = ", ".join(f"{cell} ({count} regions)" for cell, count in disconnected.items())
+    st.warning(
+        f"Some saved cell labels cover separate regions: {details}. "
+        "The pipeline treats each label as one cell and can combine their signals. "
+        "If these regions are different cells, select the label and click "
+        "Separate regions, then save before continuing the pipeline."
+    )
 
 st.write(
     {
@@ -107,6 +121,13 @@ st.caption(
     "Tools: Select (S), Brush (B) traces an outline and fills on release, "
     "Erase (E), Split (X), Overlay (O), Pan (space). "
     "Shift+click to add to selection. Wheel to zoom. Ctrl+Z / Ctrl+Y for undo/redo."
+)
+st.caption(
+    "Each brush outline creates a new cell by default. To extend an existing cell, "
+    "select it and uncheck New cell for each outline. Separate regions gives "
+    "disconnected parts of the selected label their own cell IDs without changing boundaries. "
+    "Saving numbers cells consecutively from 1 for Cellpose compatibility. "
+    "Regenerate correspondence and trace exports after changing masks."
 )
 
 notice = st.session_state.pop("mask_editor_notice", None)

@@ -12,9 +12,9 @@
         <input type="range" min="1" max="60" step="1" data-role="brush" />
         <span data-role="brush-value">3</span>
       </label>
-      <label>
-        <input type="checkbox" data-role="new-label" />
-        New label
+      <label title="Uncheck only when extending a single selected cell">
+        <input type="checkbox" data-role="new-label" checked />
+        New cell for each outline
       </label>
       <label>Alpha
         <input type="range" min="0" max="100" step="1" data-role="alpha" />
@@ -27,6 +27,7 @@
       <button data-role="redo" title="Redo (Ctrl+Y)">Redo</button>
       <button data-role="delete" title="Delete selection (Del)">Delete</button>
       <button data-role="merge" title="Merge selected labels">Merge</button>
+      <button data-role="separate" title="Give disconnected regions of the selected cell separate labels, keeping their boundaries">Separate regions</button>
       <button data-role="commit" class="mask-editor__commit" title="Save changes">Save</button>
     </div>
   </div>

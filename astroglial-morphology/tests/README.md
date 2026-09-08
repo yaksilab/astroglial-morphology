@@ -41,6 +41,22 @@ uv run --group test pytest --cov=astroglial_morphology --cov-report=html
 uv run --group test pytest tests/test_config.py
 ```
 
+### Run mask editor interaction tests
+
+From the package directory, with Node.js 18 or later installed:
+
+```bash
+node tests/test_mask_editor.mjs
+```
+
+These tests exercise the actual JavaScript renderer's pointer handlers and saved
+mask payload using a minimal DOM/canvas harness. They cover separate cell IDs,
+explicit extension, disconnected-region separation, and undo/redo. They do not
+replace visual browser testing. The Python save/codec and label-warning checks
+run in `tests/test_gui_services.py`. `tests/test_cellpose_gui_compatibility.py`
+also exercises the installed Cellpose GUI loader and saver with synthetic masks
+and a paired image; widget-dependent image setup is replaced, so Qt is not needed.
+
 ### Run specific test class
 ```bash
 uv run --group test pytest tests/test_config.py::TestPipelineConfig

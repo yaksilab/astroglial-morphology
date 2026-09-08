@@ -269,7 +269,7 @@ class TestResultsLoaders:
         assert result_path == seg_path
         assert (plane / "mean_ch0_image_seg.npy.orig").is_file()
         payload = np.load(seg_path, allow_pickle=True).item()
-        assert (payload["masks"] == edited).all()
+        np.testing.assert_array_equal(payload["masks"], (edited > 0).astype(np.int32))
         assert payload["manual_edited"] is True
 
     def test_save_seg_masks_backup_only_once(self, temp_dir):
@@ -374,6 +374,49 @@ class TestMaskEditorCodec:
                     "height": 8,
                 }
             )
+
+    def test_cell_identities_survive_codec_save_and_reload(self, tmp_path):
+        from astroglial_morphology.gui.components.mask_editor.component import (
+            decode_rle_to_masks,
+            encode_masks_to_rle,
+        )
+
+        masks = np.zeros((20, 30), dtype=np.int32)
+        masks[2:6, 2:6] = 1
+        masks[8:12, 10:14] = 2
+        masks[14:18, 20:24] = 3
+        path = tmp_path / "corrected_seg.npy"
+        save_seg_masks(path, decode_rle_to_masks(encode_masks_to_rle(masks)))
+        np.testing.assert_array_equal(load_seg_file(path)["masks"], masks)
+
+
+class TestDisconnectedMaskLabels:
+    def test_shared_cell_id_is_reported_without_modifying_masks(self):
+        from astroglial_morphology.gui.services.results import find_disconnected_mask_labels
+
+        masks = np.zeros((20, 30), dtype=np.int32)
+        masks[2:6, 2:6] = 5
+        masks[8:12, 10:14] = 5
+        masks[14:18, 20:24] = 5
+        original = masks.copy()
+        assert find_disconnected_mask_labels(masks) == {5: 3}
+        np.testing.assert_array_equal(masks, original)
+
+    def test_diagonal_contact_and_touching_different_labels(self):
+        from astroglial_morphology.gui.services.results import find_disconnected_mask_labels
+
+        masks = np.array([[5, 0, 0], [0, 5, 7], [0, 0, 0]], dtype=np.int32)
+        assert find_disconnected_mask_labels(masks) == {}
+        masks[2, 0] = 7
+        assert find_disconnected_mask_labels(masks) == {7: 2}
+
+    def test_empty_mask_and_sparse_ids(self):
+        from astroglial_morphology.gui.services.results import find_disconnected_mask_labels
+
+        masks = np.zeros((4, 4), dtype=np.int32)
+        assert find_disconnected_mask_labels(masks) == {}
+        masks[0, 0] = masks[3, 3] = 1_000_000
+        assert find_disconnected_mask_labels(masks) == {1_000_000: 2}
 
 
 class TestJobLogging:
